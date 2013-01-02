@@ -13,29 +13,43 @@ import           Grammar
 
 
 first1 :: [Symbol] -> S.Set Terminal
-first1 ss = first1_ (S.singleton ss) S.empty
+-- first1 ss = first1_ (S.singleton ss) S.empty
+first1 (s : _) = M.lookupDefault (error "yikes") s first1_
+first1 []      = S.singleton Tlambda
 
-{-
--- кэш прикрути
-first1_ :: [[Symbol]] -> S.Set Terminal -> S.Set Terminal
-first1_ []                  result = result
-first1_ ([] : open)         result = first1_ open (S.insert (T "lambda") result)
-first1_ ((N n : ss) : open) result =
+
+first1_ :: M.HashMap Symbol (S.Set Terminal)
+first1_ =
     let terminal_headed ss = case ss of
             T _ : _ -> True
             _       -> False
+        init_terminal m t = M.insert (T t) (S.singleton t) m
+        init_nonterminal m n =
+            let rs  = rules n
+                ts1 = (S.fromList . map ((\ (T t) -> t) . head) . filter terminal_headed) rs
+                ts2 = if elem [] rs then S.insert Tlambda ts1 else ts1
+            in  M.insert (N n) ts2 m
+        f _  ys []               = ys
+        f xs ys (T Tlambda : ss) = f xs ys ss
+        f _  ys (T t : _)        = S.insert t ys
+        f xs ys (N n : ss)       =
+            let zs = M.lookupDefault (error "aargh") (N n) xs
+            in  if S.member Tlambda zs
+                    then f xs (S.union ys zs) ss
+                    else S.union ys zs
+        update xs n =
+            let rs = filter (not . terminal_headed) (rules n)
+                ys = foldl' (f xs) S.empty rs
+            in  M.adjust (S.union ys) (N n) xs
+        iterate xs =
+            let xs' = S.foldl' update xs nonterminals
+            in  if xs' == xs then xs else iterate xs'
+        xs1 = S.foldl' init_terminal M.empty terminals
+        xs2 = S.foldl' init_nonterminal xs1 nonterminals
+    in  iterate xs2
 
-        cut_after_terminal []             = []
-        cut_after_terminal (t@(T _) : _)  = [t]
-        cut_after_terminal (n@(N _) : ss) = n : cut_after_terminal ss
 
-        (xs, ys) = (partition terminal_headed . map (++ ss)) (rules n)
-        result1  = foldl' (\ ts (t : _) -> S.insert t ts) result xs
-        open1    = (S.toList . S.fromList) $ open' ++ map cut_after_terminal ys
-    in  first1_ open1 result1
-first1_ _                   _      = error "terminal-headed sequence in open set"
--}
-
+{-
 first1_ :: S.Set [Symbol] -> S.Set Terminal -> S.Set Terminal
 first1_ open result | open == S.empty = result
 first1_ open result                   = trace' open `seq`
@@ -57,6 +71,7 @@ first1_ open result                   = trace' open `seq`
 
         (open', result') = S.foldl' f (S.empty, result) open
     in  first1_ open' result'
+-}
 
 
 {-
@@ -126,14 +141,21 @@ shift state s =
 closing :: State -> State -> State
 closing open closed | open == M.empty = closed
 closing open closed                   =
-    let close_state (open, closed) cr@(_, _, N n : ss) ctx =
+    let close_state (open, closed) cr@(_, _, [])       ctx = (open, M.insertWith S.union cr ctx closed)
+        close_state (open, closed) cr@(_, _, T _ : _)  ctx = (open, M.insertWith S.union cr ctx closed)
+        close_state (open, closed) cr@(_, _, N n : ss) ctx =
             let ctx' = (S.unions . S.toList . S.map (first1 . (\ t -> ss ++ [T t]))) ctx
                 f (xs, ys) r = case r of
-                    N _ : _ -> (M.insertWith S.union (n, [], r) ctx' xs, ys)
-                    _       -> (xs, M.insertWith S.union (n, [], r) ctx' ys)
+                    N _ : _ ->
+                        let xs' = case M.lookup (n, [], r) ys of
+                                Nothing -> M.insertWith S.union (n, [], r) ctx' xs
+                                _       -> xs
+                        in  (xs', ys)
+                    _       ->
+                        let ys' = M.insertWith S.union (n, [], r) ctx' ys
+                        in  (xs, ys')
                 closed' = M.insertWith S.union cr ctx closed
             in  foldl' f (open, closed') (rules n)
-        close_state _ (_, _, _) _ = error "terminal-headed or empty rhs sequence "
         (open', closed') = M.foldlWithKey' close_state (M.empty, closed) open
     in  closing open' closed'
 
