@@ -5,21 +5,23 @@ module LALR
 
 import qualified Data.Set            as S
 import qualified Data.HashMap.Strict as M
-import           Data.List                (foldl', partition)
-import           Control.DeepSeq
+import           Data.List                (foldl')
 
 import           Types
 import           Grammar
 
 
 first1 :: [Symbol] -> S.Set Terminal
--- first1 ss = first1_ (S.singleton ss) S.empty
-first1 (s : _) = M.lookupDefault (error "yikes") s first1_
-first1 []      = S.singleton Tlambda
+first1 []       = S.singleton Tlambda
+first1 (s : ss) =
+    let ts = M.lookupDefault (error "yikes") s symbol_to_first1
+    in  if S.member Tlambda ts
+            then S.union ts (first1 ss)
+            else ts
 
 
-first1_ :: M.HashMap Symbol (S.Set Terminal)
-first1_ =
+symbol_to_first1 :: M.HashMap Symbol (S.Set Terminal)
+symbol_to_first1 =
     let terminal_headed ss = case ss of
             T _ : _ -> True
             _       -> False
@@ -47,31 +49,6 @@ first1_ =
         xs1 = S.foldl' init_terminal M.empty terminals
         xs2 = S.foldl' init_nonterminal xs1 nonterminals
     in  iterate xs2
-
-
-{-
-first1_ :: S.Set [Symbol] -> S.Set Terminal -> S.Set Terminal
-first1_ open result | open == S.empty = result
-first1_ open result                   = trace' open `seq`
-    let terminal_headed ss = case ss of
-            T _ : _ -> True
-            _       -> False
-
-        cut_after_terminal []             = []
-        cut_after_terminal (t@(T _) : _)  = [t]
-        cut_after_terminal (n@(N _) : ss) = n : cut_after_terminal ss
-
-        f (open, result) []         = (open, S.insert (Tlambda) result)
-        f (open, result) (T t : _)  = (open, S.insert t result)
-        f (open, result) (N n : ss) =
-            let (xs, ys) = (partition terminal_headed . map (++ ss)) (rules n)
-                result'  = foldl' (\ ts (T t : _) -> S.insert t ts) result xs
-                open'    = (S.fromList . map cut_after_terminal) ys
-            in  (S.union open open', result')
-
-        (open', result') = S.foldl' f (S.empty, result) open
-    in  first1_ open' result'
--}
 
 
 {-
