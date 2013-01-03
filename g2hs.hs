@@ -81,7 +81,7 @@ parse_nonterminals =
 
 parse_rules :: S.Set Terminal -> S.Set NonTerminal -> String -> M.HashMap NonTerminal (S.Set [Symbol])
 parse_rules ts ns =
-    ( M.fromList
+    ( foldl' (\ m (n, r) -> M.insertWith S.union n r m) M.empty
     . map (parse_rule ts ns)
     . split_at ','
     . takeWhile (/= '}')

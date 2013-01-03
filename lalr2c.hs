@@ -1,4 +1,6 @@
+import Control.Monad (mapM_)
 import Data.List (foldl')
+import qualified Data.Set as S
 import System.Environment (getArgs)
 import Control.Monad (when)
 import System.Console.GetOpt
@@ -35,7 +37,7 @@ main = do
     let tbl  = lalr1_table
         code = codegen tbl v
 
-    print tbl
+    mapM_ print (S.toList tbl)
     writeFile fdest code
 
 

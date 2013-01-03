@@ -51,14 +51,9 @@ symbol_to_first1 =
     in  iterate xs2
 
 
-{-
-n2context :: M.HashMap NonTerminal (S.Set Terminal)
-n2context = S.foldl' (\ m n -> M.insert n (first1 [N n]) m) M.empty nonterminals
--}
-
-
 lalr1_table :: LALRTable
-lalr1_table = lr1_to_lalr1 lr1_states
+lalr1_table = lr1_states
+--lalr1_table = lr1_to_lalr1 lr1_states
 
 
 lr1_to_lalr1 :: S.Set State -> S.Set State
@@ -75,13 +70,15 @@ lr1_to_lalr1 states =
         core2state = S.foldl' f M.empty states
     in  (S.fromList . M.elems) core2state
 
+-- NOW CHECK LR and LALR conflicts
+
 
 lr1_states :: S.Set State
 lr1_states =
     let f open closed | open == S.empty = closed
         f open closed =
             let closed' = S.union closed open
-                open'   = (S.filter (\ st -> S.notMember st closed') . S.unions . map expand_state . S.toList) open
+                open'   = (S.filter (`S.notMember` closed') . S.unions . map expand_state . S.toList) open
             in  f open' closed'
     in  f (S.singleton init_state) S.empty
 
@@ -125,8 +122,9 @@ closing open closed                   =
                 f (xs, ys) r = case r of
                     N _ : _ ->
                         let xs' = case M.lookup (n, [], r) ys of
-                                Nothing -> M.insertWith S.union (n, [], r) ctx' xs
-                                _       -> xs
+                                Nothing                              -> M.insertWith S.union (n, [], r) ctx' xs
+                                Just ctx'' | S.isSubsetOf ctx' ctx'' -> xs
+                                _                                    -> M.insertWith S.union (n, [], r) ctx' xs
                         in  (xs', ys)
                     _       ->
                         let ys' = M.insertWith S.union (n, [], r) ctx' ys

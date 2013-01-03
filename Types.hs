@@ -38,8 +38,10 @@ instance (Hashable a) => Hashable (S.Set a) where
     hash = S.foldl' hashAndCombine 0
 
 
-instance (Eq a, Eq b) => Ord (M.HashMap a b) where
-    compare m1 m2 = compare (M.size m1) (M.size m2)
+instance (Eq a, Eq b, Ord a, Ord b) => Ord (M.HashMap a b) where
+    compare m1 m2 | M.size m1 < M.size m2 = LT
+    compare m1 m2 | M.size m1 > M.size m2 = GT
+    compare m1 m2 = compare (M.toList m1) (M.toList m2)
 
 
 trace' :: Show a => a -> a
