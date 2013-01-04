@@ -227,6 +227,12 @@ doc_nonterminals ns =
     $$ PP.text "nonterminals = S.fromList " <> (PP.brackets . PP.vcat . PP.punctuate (PP.text ", ") . map nonterminal2name . S.toList) ns
 
 
+doc_symbols :: Doc
+doc_symbols =
+    PP.text "symbols :: S.Set Symbol"
+    $$ PP.text "symbols = S.map T  terminals `S.union` S.map N nonterminals"
+
+
 doc_instances :: S.Set Terminal -> S.Set NonTerminal -> Doc
 doc_instances ts ns =
     let doc_hash_ts =
@@ -289,10 +295,11 @@ g2hs (G ts ns rs a) =
         d4 = PP.text "type Rule        = NonTerminal -> [[Symbol]]"
         d5 = doc_terminals ts
         d6 = doc_nonterminals ns
-        d7 = doc_rules rs
-        d8 = doc_axiom a
-        d9 = doc_instances ts ns
-        doc = d0 $$$ d1 $$ d2 $$ d3 $$ d4 $$$ d5 $$$ d6 $$$ d7 $$$ d8 $$$ d9
+        d7 = doc_symbols
+        d8 = doc_rules rs
+        d9 = doc_axiom a
+        d10 = doc_instances ts ns
+        doc = d0 $$$ d1 $$ d2 $$ d3 $$ d4 $$$ d5 $$$ d6 $$$ d7 $$$ d8 $$$ d9 $$$ d10
     in  PP.render doc
 
 

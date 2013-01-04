@@ -3,6 +3,7 @@ module Types where
 
 import qualified Data.HashMap.Strict  as M
 import qualified Data.Set             as S
+import           Data.List                 (foldl')
 import           Data.Hashable
 
 import Debug.Trace
@@ -24,10 +25,11 @@ data CmdOptions = CmdOpts
     }
 
 
-type LALRTable   = S.Set State
 type Core        = (NonTerminal, [Symbol], [Symbol])
 type Context     = S.Set Terminal
 type State       = M.HashMap Core Context
+type GotoTable   = M.HashMap State (M.HashMap Symbol State)
+type LALRTable   = GotoTable
 
 
 hashAndCombine :: Hashable h => Int -> h -> Int
@@ -36,6 +38,10 @@ hashAndCombine acc h = acc `combine` hash h
 
 instance (Hashable a) => Hashable (S.Set a) where
     hash = S.foldl' hashAndCombine 0
+
+
+instance (Hashable k, Hashable v) => Hashable (M.HashMap k v) where
+    hash m = foldl' hashAndCombine 0 (M.toList m)
 
 
 instance (Eq a, Eq b, Ord a, Ord b) => Ord (M.HashMap a b) where

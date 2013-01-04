@@ -52,35 +52,45 @@ symbol_to_first1 =
 
 
 lalr1_table :: LALRTable
-lalr1_table = lr1_states
---lalr1_table = lr1_to_lalr1 lr1_states
+--lalr1_table = lr1_goto_table
+lalr1_table = lr1_to_lalr1 lr1_goto_table
 
 
-lr1_to_lalr1 :: S.Set State -> S.Set State
-lr1_to_lalr1 states =
---    let unite_states st1 st2 = M.foldlWithKey' (\ st cr ctx -> M.insertWith S.union cr ctx st) st1 st2
-    let unite_states st1 st2 = M.foldlWithKey'
-            (\ st cr ctx -> case M.lookup cr st of
-                Just ctx' -> M.insert cr (S.union ctx ctx') st
-                Nothing   -> error "no appropriate cores found in merged states"
-            ) st1 st2
-        f cr2st st =
+lr1_to_lalr1 :: GotoTable -> GotoTable
+lr1_to_lalr1 goto_tbl =
+    let unite_states st1 st2 = M.foldlWithKey' (\ st cr ctx -> M.insertWith S.union cr ctx st) st1 st2
+        f1 cr2st st =
             let cr = (S.fromList . M.keys) st
             in  M.insertWith unite_states cr st cr2st
-        core2state = S.foldl' f M.empty states
-    in  (S.fromList . M.elems) core2state
+        states     = M.keys goto_tbl
+        core2state = foldl' f1 M.empty states
+        f2 st2st st =
+            let cr  = (S.fromList . M.keys) st
+                st' = M.lookupDefault (error "cant't find state for core") cr core2state
+            in  M.insert st st' st2st
+        state2state = foldl' f2 M.empty states
+        f3 tbl st s2st =
+            let lookup st = M.lookupDefault (error "cant't find state for state") st state2state
+                unite_goto s2st1 s2st2 = M.foldlWithKey' (\ s2st s st -> M.insertWith unite_states s st s2st) s2st1 s2st2
+                st'   = lookup st
+                s2st' = M.map lookup s2st
+            in  M.insertWith unite_goto st' s2st' tbl
+        goto_tbl' = M.foldlWithKey' f3 M.empty goto_tbl
+    in  goto_tbl'
 
--- NOW CHECK LR and LALR conflicts
 
-
-lr1_states :: S.Set State
-lr1_states =
-    let f open closed | open == S.empty = closed
+lr1_goto_table :: GotoTable
+lr1_goto_table =
+    let g (open, closed) st =
+            let s2st    = goto_function st
+                open'   = (S.union open . S.filter (\ st -> M.lookup st closed == Nothing) . S.fromList . M.elems) s2st
+                closed' = M.insert st s2st closed
+            in  (open', closed')
+        f open closed | open == S.empty = closed
         f open closed =
-            let closed' = S.union closed open
-                open'   = (S.filter (`S.notMember` closed') . S.unions . map expand_state . S.toList) open
+            let (open', closed') = S.foldl' g (S.empty, closed) open
             in  f open' closed'
-    in  f (S.singleton init_state) S.empty
+    in  f (S.singleton init_state) M.empty
 
 
 init_state :: State
@@ -90,17 +100,16 @@ init_state =
             _       -> error "bad axiom rule in grammar"
         ctx  = S.singleton (Tlambda)
         open = M.insert (axiom, [], r) ctx M.empty
-    in  closing open M.empty
+    in  closing open
 
 
-expand_state :: State -> S.Set State
-expand_state state =
-    let ss = (map T . S.toList) terminals ++ (map N . S.toList) nonterminals
-        f states s =
-            let st1 = shift state s
-                st2 = closing st1 M.empty
-            in  S.insert st2 states
-    in  foldl' f S.empty ss
+goto_function :: State -> M.HashMap Symbol State
+goto_function state | state == M.empty = M.empty
+goto_function state =
+    let f s2st s =
+            let st = closing $ shift state s
+            in  M.insert s st s2st
+    in  S.foldl' f M.empty symbols
 
 
 shift :: State -> Symbol -> State
@@ -112,9 +121,13 @@ shift state s =
     in  M.foldlWithKey' f M.empty state
 
 
-closing :: State -> State -> State
-closing open closed | open == M.empty = closed
-closing open closed                   =
+closing :: State -> State
+closing open = closing_ open M.empty
+
+
+closing_ :: State -> State -> State
+closing_ open closed | open == M.empty = closed
+closing_ open closed                   =
     let close_state (open, closed) cr@(_, _, [])       ctx = (open, M.insertWith S.union cr ctx closed)
         close_state (open, closed) cr@(_, _, T _ : _)  ctx = (open, M.insertWith S.union cr ctx closed)
         close_state (open, closed) cr@(_, _, N n : ss) ctx =
@@ -122,7 +135,6 @@ closing open closed                   =
                 f (xs, ys) r = case r of
                     N _ : _ ->
                         let xs' = case M.lookup (n, [], r) ys of
-                                Nothing                              -> M.insertWith S.union (n, [], r) ctx' xs
                                 Just ctx'' | S.isSubsetOf ctx' ctx'' -> xs
                                 _                                    -> M.insertWith S.union (n, [], r) ctx' xs
                         in  (xs', ys)
@@ -132,7 +144,7 @@ closing open closed                   =
                 closed' = M.insertWith S.union cr ctx closed
             in  foldl' f (open, closed') (rules n)
         (open', closed') = M.foldlWithKey' close_state (M.empty, closed) open
-    in  closing open' closed'
+    in  closing_ open' closed'
 
 
 

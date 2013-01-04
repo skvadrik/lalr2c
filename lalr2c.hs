@@ -1,5 +1,6 @@
 import Control.Monad (mapM_)
 import Data.List (foldl')
+import qualified Data.HashMap.Strict as M
 import qualified Data.Set as S
 import System.Environment (getArgs)
 import Control.Monad (when)
@@ -37,7 +38,11 @@ main = do
     let tbl  = lalr1_table
         code = codegen tbl v
 
-    mapM_ print (S.toList tbl)
+    mapM_
+        (\ (st, s2st) -> do
+            print $ "_______" ++ show st
+            mapM_ print (M.toList s2st)
+        ) (M.toList tbl)
     writeFile fdest code
 
 
