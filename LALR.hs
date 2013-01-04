@@ -52,17 +52,65 @@ symbol_to_first1 =
 
 
 lalr1_table :: LALRTable
---lalr1_table = lr1_goto_table
-lalr1_table = lr1_to_lalr1 lr1_goto_table
+lalr1_table =
+--    let states = state_table
+    let states = lr1_to_lalr1 state_table
+        f tbl st =
+            let s2st    = M.lookupDefault (error "missing state in state table") st states
+                actions = action_table st s2st
+                gotos   = goto_table s2st
+            in  M.insert st (actions, gotos) tbl
+    in  foldl' f M.empty (M.keys states)
 
 
-lr1_to_lalr1 :: GotoTable -> GotoTable
-lr1_to_lalr1 goto_tbl =
+raise_conflict :: Terminal -> Action -> Action -> a
+raise_conflict t act1 act2 = error $ concat
+    [ "LALR(1) conflict trying to define ACTION function"
+    , "\n\tat symbol "
+    , show t
+    , "\n\ttwo actions possible: "
+    , show act1
+    , " vs "
+    , show act2
+    ]
+
+
+action_table :: State -> M.HashMap Symbol State -> ActionTable
+action_table st s2st =
+    let try_insert act t2act t = case M.lookup t t2act of
+            Nothing    -> M.insert t act t2act
+            Just Error -> M.insert t act t2act
+            Just Shift | (case act of { Shift -> True; _ -> False }) -> t2act
+            Just act'  -> raise_conflict t act' act
+        f t2act cr ctx =
+            let v = case cr of
+                    (_, _, T t : _)                  -> Just (S.singleton t, Shift)
+                    (n, ls, []) | n /= axiom         -> Just (ctx, Reduce n ls)
+                    _ | (cr, ctx) == final_situation -> Just (ctx, Accept)
+                    _                                -> Nothing
+            in  case v of
+                    Just (ts, act) -> S.foldl' (try_insert act) t2act ts
+                    Nothing        -> t2act
+        t2act = S.foldl' (\ t2act' t -> M.insert t Error t2act') M.empty terminals
+    in  M.foldlWithKey' f t2act st
+--                    (n, ls, T t : rs)               -> Just (S.singleton t, Shift)
+--            let st' = M.lookupDefault (error "can't find state in goto map") (T t) s2st
+
+
+goto_table :: M.HashMap Symbol State -> GotoTable
+goto_table s2st =
+    let f m (N n) v = M.insert n v m
+        f m _     _ = m
+    in  M.foldlWithKey' f M.empty s2st
+
+
+lr1_to_lalr1 :: StateTable -> StateTable
+lr1_to_lalr1 state_tbl =
     let unite_states st1 st2 = M.foldlWithKey' (\ st cr ctx -> M.insertWith S.union cr ctx st) st1 st2
         f1 cr2st st =
             let cr = (S.fromList . M.keys) st
             in  M.insertWith unite_states cr st cr2st
-        states     = M.keys goto_tbl
+        states     = M.keys state_tbl
         core2state = foldl' f1 M.empty states
         f2 st2st st =
             let cr  = (S.fromList . M.keys) st
@@ -75,14 +123,14 @@ lr1_to_lalr1 goto_tbl =
                 st'   = lookup st
                 s2st' = M.map lookup s2st
             in  M.insertWith unite_goto st' s2st' tbl
-        goto_tbl' = M.foldlWithKey' f3 M.empty goto_tbl
-    in  goto_tbl'
+        state_tbl' = M.foldlWithKey' f3 M.empty state_tbl
+    in  state_tbl'
 
 
-lr1_goto_table :: GotoTable
-lr1_goto_table =
+state_table :: StateTable
+state_table =
     let g (open, closed) st =
-            let s2st    = goto_function st
+            let s2st    = state_function st
                 open'   = (S.union open . S.filter (\ st -> M.lookup st closed == Nothing) . S.fromList . M.elems) s2st
                 closed' = M.insert st s2st closed
             in  (open', closed')
@@ -93,19 +141,34 @@ lr1_goto_table =
     in  f (S.singleton init_state) M.empty
 
 
-init_state :: State
-init_state =
-    let r    = case rules axiom of
+init_situation :: (Core, Context)
+init_situation =
+    let r   = case rules axiom of
             [[ax']] -> [ax']
             _       -> error "bad axiom rule in grammar"
-        ctx  = S.singleton (Tlambda)
-        open = M.insert (axiom, [], r) ctx M.empty
+        ctx = S.singleton (Tlambda)
+    in  ((axiom, [], r), ctx)
+
+
+final_situation :: (Core, Context)
+final_situation =
+    let r   = case rules axiom of
+            [[ax']] -> [ax']
+            _       -> error "bad axiom rule in grammar"
+        ctx = S.singleton (Tlambda)
+    in  ((axiom, r, []), ctx)
+
+
+init_state :: State
+init_state =
+    let (cr, ctx) = init_situation
+        open = M.insert cr ctx M.empty
     in  closing open
 
 
-goto_function :: State -> M.HashMap Symbol State
-goto_function state | state == M.empty = M.empty
-goto_function state =
+state_function :: State -> M.HashMap Symbol State
+state_function state | state == M.empty = M.empty
+state_function state =
     let f s2st s =
             let st = closing $ shift state s
             in  M.insert s st s2st

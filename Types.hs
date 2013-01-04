@@ -28,8 +28,16 @@ data CmdOptions = CmdOpts
 type Core        = (NonTerminal, [Symbol], [Symbol])
 type Context     = S.Set Terminal
 type State       = M.HashMap Core Context
-type GotoTable   = M.HashMap State (M.HashMap Symbol State)
-type LALRTable   = GotoTable
+data Action
+    = Shift
+    | Reduce NonTerminal [Symbol]
+    | Accept
+    | Error
+    deriving (Show)
+type StateTable  = M.HashMap State (M.HashMap Symbol State)
+type GotoTable   = M.HashMap NonTerminal State
+type ActionTable = M.HashMap Terminal Action
+type LALRTable   = M.HashMap State (ActionTable, GotoTable)
 
 
 hashAndCombine :: Hashable h => Int -> h -> Int

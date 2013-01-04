@@ -39,9 +39,12 @@ main = do
         code = codegen tbl v
 
     mapM_
-        (\ (st, s2st) -> do
-            print $ "_______" ++ show st
-            mapM_ print (M.toList s2st)
+        (\ (st, (action_tbl, goto_tbl)) -> do
+            print $ "state:::: " ++ show st
+            print $ "ACTION:::: "
+            mapM_ print (M.toList action_tbl)
+            print $ "GOTO:::: "
+            mapM_ print (M.toList goto_tbl)
         ) (M.toList tbl)
     writeFile fdest code
 
