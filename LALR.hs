@@ -11,7 +11,7 @@ import           Types
 import           Grammar
 
 
-first1 :: [Symbol] -> S.Set Terminal
+first1 :: [Symbol] -> Context
 first1 []       = S.singleton Tlambda
 first1 (s : ss) =
     let ts = M.lookupDefault (error "yikes") s symbol_to_first1
@@ -20,7 +20,7 @@ first1 (s : ss) =
             else ts
 
 
-symbol_to_first1 :: M.HashMap Symbol (S.Set Terminal)
+symbol_to_first1 :: M.HashMap Symbol Context
 symbol_to_first1 =
     let terminal_headed ss = case ss of
             T _ : _ -> True
@@ -53,14 +53,14 @@ symbol_to_first1 =
 
 lalr1_table :: LALRTable
 lalr1_table =
---    let states = state_table
-    let states = lr1_to_lalr1 state_table
-        f tbl st =
-            let s2st    = M.lookupDefault (error "missing state in state table") st states
-                actions = action_table st s2st
-                gotos   = goto_table s2st
-            in  M.insert st (actions, gotos) tbl
-    in  foldl' f M.empty (M.keys states)
+    let sid2st_s2sid = lr1_to_lalr1 state_table
+        sids         = M.keys sid2st_s2sid
+        f tbl sid =
+            let (st, s2sid) = M.lookupDefault (error "missing state in state table") sid sid2st_s2sid
+                t2action    = action_table st
+                n2sid       = goto_table s2sid
+            in  M.insert sid (t2action, n2sid) tbl
+    in  foldl' f M.empty sids
 
 
 raise_conflict :: Terminal -> Action -> Action -> a
@@ -75,15 +75,15 @@ raise_conflict t act1 act2 = error $ concat
     ]
 
 
-action_table :: State -> M.HashMap Symbol State -> ActionTable
-action_table st s2st =
-    let try_insert act t2act t = case M.lookup t t2act of
-            Nothing    -> M.insert t act t2act
-            Just Error -> M.insert t act t2act
-            Just Shift | (case act of { Shift -> True; _ -> False }) -> t2act
-            Just (Reduce _ _) | (case act of { Shift -> True; _ -> False }) -> M.insert t act t2act
-            Just Shift | (case act of { Reduce _ _ -> True; _ -> False }) -> t2act
-            Just act'  -> raise_conflict t act' act
+action_table :: State -> ActionTable
+action_table state =
+    let try_insert act t2act t = case (M.lookup t t2act, act) of
+            (Nothing,           _         ) -> M.insert t act t2act
+            (Just Error,        _         ) -> M.insert t act t2act
+            (Just Shift,        Shift     ) -> t2act
+            (Just Shift,        Reduce _ _) -> t2act
+            (Just (Reduce _ _), Shift     ) -> M.insert t act t2act
+            (Just act',         _         ) -> raise_conflict t act' act
         f t2act cr ctx =
             let v = case cr of
                     (_, _, T t : _)                  -> Just (S.singleton t, Shift)
@@ -94,53 +94,39 @@ action_table st s2st =
                     Just (ts, act) -> S.foldl' (try_insert act) t2act ts
                     Nothing        -> t2act
         t2act = S.foldl' (\ t2act' t -> M.insert t Error t2act') M.empty terminals
-    in  M.foldlWithKey' f t2act st
---                    (n, ls, T t : rs)               -> Just (S.singleton t, Shift)
---            let st' = M.lookupDefault (error "can't find state in goto map") (T t) s2st
+    in  M.foldlWithKey' f t2act state
 
 
-goto_table :: M.HashMap Symbol State -> GotoTable
-goto_table s2st =
+goto_table :: M.HashMap Symbol SID -> GotoTable
+goto_table s2sid =
     let f m (N n) v = M.insert n v m
         f m _     _ = m
-    in  M.foldlWithKey' f M.empty s2st
+    in  M.foldlWithKey' f M.empty s2sid
 
 
 lr1_to_lalr1 :: StateTable -> StateTable
-lr1_to_lalr1 state_tbl =
-    let unite_states st1 st2 = M.foldlWithKey' (\ st cr ctx -> M.insertWith S.union cr ctx st) st1 st2
-        f1 cr2st st =
+lr1_to_lalr1 =
+    let unite (sid1, (st1, s2sid1)) (sid2, (st2, s2sid2)) =
+            let sid   = min sid1 sid2
+                st    = M.foldlWithKey' (\ st cr ctx -> M.insertWith S.union cr ctx st) st1 st2
+                s2sid = M.foldlWithKey' (\ s2sid s sid -> M.insertWith min s sid s2sid) s2sid1 s2sid2
+            in  (sid, (st, s2sid))
+        f cr2sid_st_s2sid sid (st, s2sid) =
             let cr = (S.fromList . M.keys) st
-            in  M.insertWith unite_states cr st cr2st
-        states     = M.keys state_tbl
-        core2state = foldl' f1 M.empty states
-        f2 st2st st =
-            let cr  = (S.fromList . M.keys) st
-                st' = M.lookupDefault (error "cant't find state for core") cr core2state
-            in  M.insert st st' st2st
-        state2state = foldl' f2 M.empty states
-        f3 tbl st s2st =
-            let lookup st = M.lookupDefault (error "cant't find state for state") st state2state
-                unite_goto s2st1 s2st2 = M.foldlWithKey' (\ s2st s st -> M.insertWith unite_states s st s2st) s2st1 s2st2
-                st'   = lookup st
-                s2st' = M.map lookup s2st
-            in  M.insertWith unite_goto st' s2st' tbl
-        state_tbl' = M.foldlWithKey' f3 M.empty state_tbl
-    in  state_tbl'
+            in  M.insertWith unite cr (sid, (st, s2sid)) cr2sid_st_s2sid
+    in  M.fromList . M.elems . M.foldlWithKey' f M.empty
 
 
 state_table :: StateTable
 state_table =
-    let g (open, closed) st =
-            let s2st    = state_function st
-                open'   = (S.union open . S.filter (\ st -> M.lookup st closed == Nothing) . S.fromList . M.elems) s2st
-                closed' = M.insert st s2st closed
-            in  (open', closed')
-        f open closed | open == S.empty = closed
-        f open closed =
-            let (open', closed') = S.foldl' g (S.empty, closed) open
-            in  f open' closed'
-    in  f (S.singleton init_state) M.empty
+    let g (open, closed, result, max) st sid =
+            let (s2sid, open', max') = goto_function open closed st max
+                closed'              = M.insert st sid closed
+                result'              = M.insert sid (st, s2sid) result
+            in  (open', closed', result', max')
+        f (open, _,      result, _  ) | open == M.empty = result
+        f (open, closed, result, sid)                   = f $ M.foldlWithKey' g (M.empty, closed, result, sid) open
+    in  f (M.insert init_state 0 M.empty, M.empty, M.empty, 1)
 
 
 init_situation :: (Core, Context)
@@ -168,22 +154,24 @@ init_state =
     in  closing open
 
 
-state_function :: State -> M.HashMap Symbol State
-state_function state | state == M.empty = M.empty
-state_function state =
-    let f s2st s =
-            let st = closing $ shift state s
-            in  M.insert s st s2st
-    in  S.foldl' f M.empty symbols
+goto_function :: M.HashMap State SID -> M.HashMap State SID -> State -> SID -> (M.HashMap Symbol SID, M.HashMap State SID, SID)
+goto_function open  _      st sid | st == M.empty = (M.empty, open, sid)
+goto_function open  closed st sid =
+    let f (s2sid, st2sid, max) s =
+            let st' = closing $ shift st s
+            in  case M.lookup st' closed of
+                    Just sid -> (M.insert s sid s2sid, st2sid,                  max    )
+                    Nothing  -> (M.insert s max s2sid, M.insert st' max st2sid, max + 1)
+    in  S.foldl' f (M.empty, open, sid) symbols
 
 
 shift :: State -> Symbol -> State
-shift state s =
+shift st s =
     let f xs (n, ls, rs) ctx = case (s, rs) of
             (N n1, r@(N n2) : rs') | n1 == n2 -> M.insert (n, ls ++ [r], rs') ctx xs
             (T t1, r@(T t2) : rs') | t1 == t2 -> M.insert (n, ls ++ [r], rs') ctx xs
             _                                 -> xs
-    in  M.foldlWithKey' f M.empty state
+    in  M.foldlWithKey' f M.empty st
 
 
 closing :: State -> State
