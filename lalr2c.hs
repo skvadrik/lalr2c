@@ -1,10 +1,12 @@
-import Control.Monad (mapM_)
-import Data.List (foldl')
+import           Control.Monad            (mapM_)
+import           Data.List                (foldl')
 import qualified Data.HashMap.Strict as M
-import qualified Data.Set as S
-import System.Environment (getArgs)
-import Control.Monad (when)
-import System.Console.GetOpt
+import qualified Data.Set            as S
+import           System.Environment       (getArgs)
+import           Control.Monad            (when)
+import           System.Console.GetOpt
+
+import Debug.Trace
 
 import Types
 import LALR

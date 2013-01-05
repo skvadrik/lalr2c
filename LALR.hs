@@ -81,6 +81,8 @@ action_table st s2st =
             Nothing    -> M.insert t act t2act
             Just Error -> M.insert t act t2act
             Just Shift | (case act of { Shift -> True; _ -> False }) -> t2act
+            Just (Reduce _ _) | (case act of { Shift -> True; _ -> False }) -> M.insert t act t2act
+            Just Shift | (case act of { Reduce _ _ -> True; _ -> False }) -> t2act
             Just act'  -> raise_conflict t act' act
         f t2act cr ctx =
             let v = case cr of
