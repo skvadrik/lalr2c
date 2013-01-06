@@ -7,6 +7,8 @@ import qualified Data.Set            as S
 import qualified Data.HashMap.Strict as M
 import           Data.List                (foldl')
 
+import Control.DeepSeq
+
 import           Types
 import           Grammar
 
@@ -184,12 +186,16 @@ closing_ open closed                   =
     let close_state (open, closed) cr@(_, _, [])       ctx = (open, M.insertWith S.union cr ctx closed)
         close_state (open, closed) cr@(_, _, T _ : _)  ctx = (open, M.insertWith S.union cr ctx closed)
         close_state (open, closed) cr@(_, _, N n : ss) ctx =
-            let ctx' = (S.unions . S.toList . S.map (first1 . (\ t -> ss ++ [T t]))) ctx
+            let ctx' =
+                    let ctx1 = first1 ss
+                    in  if S.member Tlambda ctx1 then S.union ctx1 ctx else ctx1
                 f (xs, ys) r = case r of
                     N _ : _ ->
                         let xs' = case M.lookup (n, [], r) ys of
-                                Just ctx'' | S.isSubsetOf ctx' ctx'' -> xs
-                                _                                    -> M.insertWith S.union (n, [], r) ctx' xs
+                                Just ctx'' ->
+                                    let ctx''' = S.difference ctx' ctx''
+                                    in  if ctx''' == S.empty then xs else M.insertWith S.union (n, [], r) ctx''' xs
+                                Nothing    -> M.insertWith S.union (n, [], r) ctx' xs
                         in  (xs', ys)
                     _       ->
                         let ys' = M.insertWith S.union (n, [], r) ctx' ys
@@ -198,6 +204,14 @@ closing_ open closed                   =
             in  foldl' f (open, closed') (rules n)
         (open', closed') = M.foldlWithKey' close_state (M.empty, closed) open
     in  closing_ open' closed'
+
+
+{-
+                        let xs' = case M.lookup (n, [], r) ys of
+                                Just ctx'' | S.isSubsetOf ctx' ctx'' -> xs
+                                _                                    -> M.insertWith S.union (n, [], r) ctx' xs
+                        in  (xs', ys)
+-}
 
 
 
