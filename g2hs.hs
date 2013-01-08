@@ -1,159 +1,126 @@
 #!/usr/bin/env runghc
 
-import           Control.Applicative        ((<$>))
-import           Control.DeepSeq
-import qualified Data.Set             as S
-import qualified Data.HashMap.Strict  as M
-import           Data.Char                  (isSpace, isAlphaNum)
-import           Data.List                  (foldl', delete, isPrefixOf)
+
+import           Control.Applicative                 ((<$>))
 import           Data.Hashable
+import           System.Environment                  (getArgs)
+import qualified Data.HashMap.Strict           as M
+import qualified Data.Set                      as S
+import           Data.List                           (foldl')
+import           Data.Char                           (isAlphaNum)
+import           Text.ParserCombinators.Parsec
+import qualified Text.PrettyPrint              as PP
+import           Text.PrettyPrint                    ((<>), ($$), Doc)
+
+
 import           Debug.Trace
-import qualified Text.PrettyPrint     as PP
-import           Text.PrettyPrint           ((<>), ($$), Doc)
-import           System.Environment         (getArgs)
 
 
-trace' :: Show a => a -> a
-trace' a = trace (show a) a
-
-
-data Grammar     = G (S.Set Terminal) (S.Set NonTerminal) (M.HashMap NonTerminal (S.Set [Symbol])) NonTerminal deriving (Show)
-data Terminal    = T String deriving (Show, Ord, Eq)
-data NonTerminal = N String deriving (Show, Ord, Eq)
-data Symbol      = ST Terminal | SN NonTerminal deriving (Show, Ord, Eq)
+data Grammar = Grammar (S.Set Terminal) (S.Set NonTerminal) (M.HashMap NonTerminal (S.Set [Symbol])) NonTerminal deriving (Show)
+data Terminal
+    = TName   String
+    | TString String
+    deriving (Show, Ord, Eq)
+newtype NonTerminal = NonTerminal String deriving (Show, Ord, Eq)
+data Symbol
+    = STerminal    Terminal
+    | SNonTerminal NonTerminal
+    deriving (Show, Ord, Eq)
 
 
 instance Hashable NonTerminal where
-    hash (N n) = hash n
+    hash (NonTerminal n) = hash n
 
 
-check_name :: String -> String
-check_name s = if filter (\ c -> isAlphaNum c || c == '_') s == s
-    then s
-    else error "bad name"
+parse_grammar :: GenParser Char st Grammar
+parse_grammar = do
+    ts <- parse_terminals
+    ax <- parse_axiom
+    eol >> string "%%" >> eol
+    rs <- parse_rules ts
+    eof
+    return $ to_grammar ts rs ax
 
 
-split_at :: Char -> String -> [String]
-split_at _ "" = []
-split_at c  s =
-    let (s1, s2) = break (== c) s
-    in  case s2 of
-            ""                                         -> [s1]
-            x : s3 | x == c && filter isSpace s3 == s3 -> [s1]
-            x : s3 | x == c                            -> s1 : split_at c s3
-            _                                          -> error "error while spliting"
+parse_terminals :: GenParser Char st (S.Set Terminal)
+parse_terminals = do
+    tss <- many1 $ do
+        try $ spaces >> string "%token"
+        ts <- many1 $ try $ spaces1 >> TName <$> parse_name
+        return $ S.fromList ts
+    return $ S.unions tss
 
 
-parse_grammar :: String -> Grammar
-parse_grammar s =
-    let ss = split_at ';' s
-    in  case ss of
-            [v, w, r, a] ->
-                let terminals        = parse_terminals    v
-                    nonterminals     = parse_nonterminals w
-                    rules            = parse_rules        terminals nonterminals r
-                    axiom            = parse_axiom        nonterminals a
-                in  G terminals nonterminals rules axiom
-            _            -> error "bad grammar file"
+
+parse_axiom :: GenParser Char st NonTerminal
+parse_axiom = do
+    spaces >> string "%start"
+    ax <- spaces1 >> parse_name
+    return $ NonTerminal ax
 
 
-parse_terminals :: String -> S.Set Terminal
-parse_terminals =
-    ( S.fromList
-    . map T
-    . split_at ','
-    . init
-    . tail
-    . filter (not . isSpace)
-    )
+parse_symbol :: S.Set Terminal -> GenParser Char st Symbol
+parse_symbol ts =
+    try $ do
+        s <- parse_name
+        return $ if S.member (TName s) ts
+            then (STerminal . TName) s
+            else (SNonTerminal . NonTerminal) s
+    <|> between (char '\'') (char '\'') ((STerminal . TString) <$> many1 (noneOf "'"))
 
 
-parse_nonterminals :: String -> S.Set NonTerminal
-parse_nonterminals =
-    ( S.fromList
-    . map (N . check_name)
-    . split_at ','
-    . init
-    . tail
-    . filter (not . isSpace)
-    )
+parse_rules :: S.Set Terminal -> GenParser Char st [(NonTerminal, S.Set [Symbol])]
+parse_rules ts =
+    many1 $ do
+        spaces
+        n  <- NonTerminal <$> parse_name
+        spaces >> char ':' >> spaces
+        xs <- sepBy1 (spaces >> many1 (parse_symbol ts >>= \ s -> spaces >> return s)) (char '|')
+        spaces >> char ';' >> spaces
+        return (n, S.fromList xs)
 
 
-parse_rules :: S.Set Terminal -> S.Set NonTerminal -> String -> M.HashMap NonTerminal (S.Set [Symbol])
-parse_rules ts ns =
-    ( foldl' (\ m (n, r) -> M.insertWith S.union n r m) M.empty
-    . map (parse_rule ts ns)
-    . split_at ','
-    . takeWhile (/= '}')
-    . tail
-    . dropWhile (/= '{')
-    )
+parse_name :: GenParser Char st String
+parse_name = many1 (alphaNum <|> char '_')
 
 
-parse_rule :: S.Set Terminal -> S.Set NonTerminal -> String -> (NonTerminal, S.Set [Symbol])
-parse_rule ts ns s =
-    let to_symbol w = case w of
-            _ | S.member (T w) ts -> (ST . T) w
-            _ | S.member (N w) ns -> (SN . N) w
-            _                     -> error $ "bad symbol" ++ show w
-        to_nonterminal w = case w of
-            _ | S.member (N w) ns -> N w
-            _                     -> error "bad nonterminal"
-        (s1, s2) = break (== '=') s
-        nt = case words s1 of
-            [w] -> to_nonterminal w
-            _   -> error "bad rule lhs"
-        rs =
-            ( S.fromList
-            . map
-                ( filter (/= ST (T "lambda"))
-                . map to_symbol
-                . words
-                )
-            . split_at '|'
-            . tail
-            ) s2
-    in  (nt, rs)
+spaces1 :: GenParser Char st ()
+spaces1 = skipMany1 space
 
 
-parse_axiom :: S.Set NonTerminal -> String -> NonTerminal
-parse_axiom ns =
-    ( (\ w -> if S.member w ns then w else error "bad nonterminal")
-    . N
-    . check_name
-    . filter (not . isSpace)
-    )
+eol :: GenParser Char st ()
+eol = skipMany1 $ char '\n'
 
 
-unify_grammar :: Grammar -> Grammar
-unify_grammar =
-    ( complement
-    . exclude_unreachable
-    . exclude_useless
-    )
+to_grammar :: S.Set Terminal -> [(NonTerminal, S.Set [Symbol])] -> NonTerminal -> Grammar
+to_grammar ts rs ax =
+    let ns = (S.fromList . fst . unzip) rs
+        insert_rule (ts, n2r) (n, r) =
+            let check_symbol ts (SNonTerminal n)          = if S.member n ns then ts else error $ "unknown nonterminal: " ++ show n
+                check_symbol ts (STerminal t@(TString _)) = S.insert t ts
+                check_symbol ts _                         = ts
+                ts'  = S.foldl' (\ ts1 ss -> foldl' check_symbol ts1 ss) ts r
+                n2r' = M.insertWith (error $ "double rule for " ++ show n) n r n2r
+            in  (ts', n2r')
+        (ts', rs') = foldl' insert_rule (ts, M.empty) rs
+        ts''       = S.insert (TName "lambda") ts'
+    in  Grammar ts'' ns rs' ax
 
 
 complement :: Grammar -> Grammar
-complement (G ts ns rs ax@(N s)) =
+complement (Grammar ts ns rs ax@(NonTerminal s)) =
     let f s = case s ++ "_" of
-            s' | S.notMember (N s') ns -> s'
+            s' | S.notMember (NonTerminal s') ns -> s'
             s'                         -> f s'
-        ax' = N (f s)
+        ax' = NonTerminal (f s)
         ns' = S.insert ax' ns
-        rs' = M.insert ax' (S.singleton [SN ax]) rs
-    in  G ts ns' rs' ax'
-
-
-exclude_useless :: Grammar -> Grammar
-exclude_useless g = g
-
-
-exclude_unreachable :: Grammar -> Grammar
-exclude_unreachable g = g
+        rs' = M.insert ax' (S.singleton [SNonTerminal ax]) rs
+    in  Grammar ts ns' rs' ax'
 
 
 terminal2name :: Terminal -> Doc
-terminal2name (T t) =
+terminal2name (TName t)   = PP.text "T" <> PP.text t
+terminal2name (TString t) =
     let f c = case c of
             _ | isAlphaNum c || c == '_' -> [c]
             '+'                          -> "Plus"
@@ -177,12 +144,21 @@ terminal2name (T t) =
             '}'                          -> "CParens"
             '['                          -> "OBracket"
             ']'                          -> "CBracket"
-            _                            -> error "unknown symbol in terminal"
+            '='                          -> "CEq"
+            '^'                          -> "CHat"
+            '&'                          -> "CAmp"
+            '%'                          -> "CPercent"
+            c                            -> error $ "unknown symbol in terminal: " ++ [c]
     in  PP.text $ "T" ++ concatMap f t
 
 
 nonterminal2name :: NonTerminal -> Doc
-nonterminal2name (N n) = PP.text $ "N" ++ n
+nonterminal2name (NonTerminal n) = PP.text $ "N" ++ n
+
+
+symbol2name :: Symbol -> Doc
+symbol2name (STerminal t)    = PP.text "T " <> terminal2name t
+symbol2name (SNonTerminal n) = PP.text "N " <> nonterminal2name n
 
 
 doc_rules :: M.HashMap NonTerminal (S.Set [Symbol]) -> Doc
@@ -196,11 +172,7 @@ doc_rules rs =
                     ( PP.brackets
                     . PP.hcat
                     . PP.punctuate (PP.text ", ")
-                    . map
-                        (\ c -> case c of
-                            SN n            -> PP.text "N " <> nonterminal2name n
-                            ST t            -> PP.text "T " <> terminal2name t
-                        )
+                    . map symbol2name
                     ) cs
                 )
             . S.toList
@@ -281,8 +253,8 @@ doc_instances ts ns =
 infixl 5 $$$
 
 
-g2hs :: Grammar -> String
-g2hs (G ts ns rs a) =
+gen_code :: Grammar -> String
+gen_code (Grammar ts ns rs a) =
     let doc_ts = (PP.hcat . PP.punctuate (PP.text " | ") . map terminal2name . S.toList) ts
         doc_ns = (PP.hcat . PP.punctuate (PP.text " | ") . map nonterminal2name . S.toList) ns
         d0 = PP.text "module Grammar where"
@@ -307,7 +279,12 @@ main :: IO ()
 main = do
     (fg, fhs) <- getArgs >>= \ args -> case args of
         [f1, f2] -> return (f1, f2)
-        _        -> error "usage: ./g2hs <grammar-file> <hs-file>"
-    code <- g2hs . unify_grammar . parse_grammar <$> readFile fg
-    writeFile fhs code
+        _        -> error "usage: ./gen_code <grammar-file> <hs-file>"
+
+    parseFromFile parse_grammar fg >>= \ g -> case g of
+        Left e   -> print e
+--        Right xs  -> print g
+        Right g' -> writeFile fhs $ (gen_code . complement) g'
+
+
 
