@@ -48,6 +48,9 @@ main = do
             print $ "GOTO:::: "
             mapM_ print (M.toList goto_tbl)
         ) (M.toList tbl)
+
+    print $ M.size tbl
+
     writeFile fdest code
 
 

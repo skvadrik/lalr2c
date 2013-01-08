@@ -21,9 +21,6 @@ all: $(PROGRAM)
 $(PROGRAM): $(SOURCES)
 	ghc --make $(GHCFLAGS) lalr2c.hs
 
-Grammar.hs : Grammar.g g2hs.hs
-	./g2hs.hs Grammar.g Grammar.hs
-
 %.hs: %.g
 	./g2hs.hs $< $@ || rm $@
 

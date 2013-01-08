@@ -80,12 +80,13 @@ raise_conflict t act1 act2 = error $ concat
 action_table :: State -> ActionTable
 action_table state =
     let try_insert act t2act t = case (M.lookup t t2act, act) of
-            (Nothing,           _         ) -> M.insert t act t2act
-            (Just Error,        _         ) -> M.insert t act t2act
-            (Just Shift,        Shift     ) -> t2act
-            (Just Shift,        Reduce _ _) -> t2act
-            (Just (Reduce _ _), Shift     ) -> M.insert t act t2act
-            (Just act',         _         ) -> raise_conflict t act' act
+            (Nothing,             _                  ) -> M.insert t act t2act
+            (Just Error,          _                  ) -> M.insert t act t2act
+            (Just Shift,          Shift              ) -> t2act
+            (Just Shift,          Reduce _ _         ) -> t2act
+            (Just (Reduce _ _),   Shift              ) -> M.insert t act t2act
+--            (Just (Reduce _ ss1), act'@(Reduce _ ss2)) -> if length ss1 < length ss2 then M.insert t act' t2act else t2act
+            (Just act',           _                  ) -> raise_conflict t act' act
         f t2act cr ctx =
             let v = case cr of
                     (_, _, T t : _)                  -> Just (S.singleton t, Shift)
