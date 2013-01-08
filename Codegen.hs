@@ -66,12 +66,11 @@ doc_print_buffer =
 doc_parse :: LALRTable -> Verbosity -> Doc
 doc_parse tbl v =
     doc_signature
-    $$
-        (wrap_in_braces $
+    $$ ( wrap_in_braces $
         doc_init_stack
-        $$$ doc_goto 0
-        $$$ M.foldlWithKey' (\ doc sid (s, actions, gotos) -> doc $$$ doc_state sid s actions gotos) PP.empty tbl
-        )
+        $$$ doc_goto (PP.text "state_" <> PP.int 0)
+        $$$ M.foldlWithKey' (\ doc sid (s, actions, gotos) -> doc $$$ (doc_state v) sid s actions gotos) PP.empty tbl
+    )
 
 
 doc_signature :: Doc
@@ -92,8 +91,8 @@ doc_init_stack =
     in  d1 $$ d2 $$$ d3
 
 
-doc_goto :: SID -> Doc
-doc_goto sid = PP.text "goto state_" <> PP.int sid <> PP.semi
+doc_goto :: Doc -> Doc
+doc_goto d = PP.text "goto " <> d <> PP.semi
 
 
 is_terminal :: Symbol -> Bool
@@ -101,8 +100,8 @@ is_terminal (T _) = True
 is_terminal _     = False
 
 
-doc_state :: SID -> Symbol -> ActionTable -> GotoTable -> Doc
-doc_state sid s t2act n2sid =
+doc_state :: Verbosity -> SID -> Symbol -> ActionTable -> GotoTable -> Doc
+doc_state v sid s t2act n2sid =
     PP.text "state_" <> PP.int sid <> PP.colon
     $$ PP.nest 4
         ( PP.text "stack = " <> PP.int sid <> PP.semi
@@ -110,36 +109,22 @@ doc_state sid s t2act n2sid =
         $$ PP.text "stack++;"
         )
     $$ PP.text "state_action_" <> PP.int sid <> PP.colon
-    $$ PP.nest 4
---        let d0 = PP.text "*p"
-{-
-            f t act =
-                let val  = show t
-                    code = case act of
-                        Shift sid'  -> doc_goto sid
-                        Reduce n ss ->
-                        Accept      ->
-                        Error       ->
-                in  doc_casebreak val code
-            d1 = M.foldlWithKey' (\ doc t act -> doc $$ f t act) PP.empty t2act
-        in  doc_switch d0 d1
--}
-          PP.empty
-
-{-
-    let d0         = PP.text "p != q" -- "stack != stack_bottom && p != q"
-        dd0        = doc_verbose v $ PP.text "print_stack (stack_bottom, stack);" $$ PP.text "print_buffer (p, q);"
-        d_if       = PP.text "*stack == *p"
-        d_then     = PP.text "p++;" $$ PP.text "--stack;"
-        dd_then    = doc_verbose v $ PP.text "printf (\"shift\\n\");"
-        d_cases    = doc_cases id2cmd
-        d_default  = doc_default (PP.text "return false;")
-        dd_default = doc_verbose v $ PP.text "printf (\"FAIL\\n\");"
-        d_else     = doc_switch (PP.text "table [*stack][*p]") (d_cases $$ dd_default $$ d_default)
-        dd_else    = doc_verbose v $ PP.text "printf (\"rule %d\\n\", table [*stack][*p]);"
-        d1         = doc_ifthenelse d_if (dd_then $$ d_then) (dd_else $$ d_else)
-    in  doc_while d0 (dd0 $$ d1)
--}
+    $$ PP.nest 4 (
+        let d0 = PP.text "*p"
+            f ts act =
+                let d = (map (PP.text . show) . S.toList) ts
+                in  case act of
+                        Shift sid'  -> doc_multicasebreak d $ doc_goto (PP.text "state_" <> PP.int sid')
+                        Reduce n ss -> doc_multicasebreak d $ doc_goto (PP.text "reduce_" <> PP.int 9999)
+                        Accept      -> doc_multicasebreak d $
+                            (doc_verbose v $ PP.text "printf (\"SUCCESS\\n\");")
+                            $$ PP.text "return true;"
+                        Error       -> PP.empty
+            act2ts = M.foldlWithKey' (\ m t act -> M.insertWith S.union act (S.singleton t) m) M.empty t2act
+            d1 = M.foldlWithKey' (\ doc act ts -> doc $$ f ts act) PP.empty act2ts
+            d2 = doc_default $ doc_verbose v (PP.text "printf (\"FAIL\\n\");") $$ PP.text "return false;"
+        in  doc_switch d0 (d1 $$ d2)
+    )
 
 
 ----------------------------------------------------------------------
@@ -199,6 +184,12 @@ doc_casebreak :: Doc -> Doc -> Doc
 doc_casebreak d1 d2 =
     PP.text "case " <> d1 <> PP.colon
     $$ PP.nest 4 (d2 $$ PP.text "break;")
+
+
+doc_multicasebreak :: [Doc] -> Doc -> Doc
+doc_multicasebreak ds d =
+    (PP.vcat $ map (\ d -> PP.text "case " <> d <> PP.colon) ds)
+    $$ PP.nest 4 (d $$ PP.text "break;")
 
 
 doc_default :: Doc -> Doc

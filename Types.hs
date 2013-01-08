@@ -45,6 +45,21 @@ hashAndCombine :: Hashable h => Int -> h -> Int
 hashAndCombine acc h = acc `combine` hash h
 
 
+instance Hashable Action where
+    hash (Shift sid)   = 2 * hash sid + 3
+    hash (Reduce n ss) = 2 * hash ss * hash n + 2
+    hash Accept        = 1
+    hash Error         = 0
+
+
+instance Eq Action where
+    Shift sid1    == Shift sid2    = sid1 == sid2
+    Reduce n1 ss1 == Reduce n2 ss2 = n1 == n2 && ss1 == ss2
+    Accept        == Accept        = True
+    Error         == Error         = True
+    _             == _             = False
+
+
 instance (Hashable a) => Hashable (S.Set a) where
     hash = S.foldl' hashAndCombine 0
 
