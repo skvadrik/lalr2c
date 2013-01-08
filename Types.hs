@@ -26,7 +26,7 @@ data CmdOptions = CmdOpts
 
 
 data Action
-    = Shift
+    = Shift  SID
     | Reduce NonTerminal [Symbol]
     | Accept
     | Error
@@ -35,10 +35,10 @@ type Core        = (NonTerminal, [Symbol], [Symbol])
 type Context     = S.Set Terminal
 type SID         = Int
 type State       = M.HashMap Core Context
-type StateTable  = M.HashMap SID (State, M.HashMap Symbol SID)
+type StateTable  = M.HashMap SID (State, Symbol, M.HashMap Symbol SID)
 type GotoTable   = M.HashMap NonTerminal SID
 type ActionTable = M.HashMap Terminal Action
-type LALRTable   = M.HashMap SID (ActionTable, GotoTable)
+type LALRTable   = M.HashMap SID (Symbol, ActionTable, GotoTable)
 
 
 hashAndCombine :: Hashable h => Int -> h -> Int

@@ -58,10 +58,10 @@ lalr1_table =
     let sid2st_s2sid = lr1_to_lalr1 state_table
         sids         = M.keys sid2st_s2sid
         f tbl sid =
-            let (st, s2sid) = M.lookupDefault (error "missing state in state table") sid sid2st_s2sid
-                t2action    = action_table st
-                n2sid       = goto_table s2sid
-            in  M.insert sid (t2action, n2sid) tbl
+            let (st, s, s2sid) = M.lookupDefault (error "missing state in state table") sid sid2st_s2sid
+                t2action       = action_table st s2sid
+                n2sid          = goto_table s2sid
+            in  M.insert sid (s, t2action, n2sid) tbl
     in  foldl' f M.empty sids
 
 
@@ -77,19 +77,23 @@ raise_conflict t act1 act2 = error $ concat
     ]
 
 
-action_table :: State -> ActionTable
-action_table state =
+action_table :: State -> M.HashMap Symbol SID -> ActionTable
+action_table state s2sid =
+-- проверь эту хрень с точки зрения логики. шифты особенно. не должны ли они быть уникальны по построению и т.д.
     let try_insert act t2act t = case (M.lookup t t2act, act) of
             (Nothing,             _                  ) -> M.insert t act t2act
             (Just Error,          _                  ) -> M.insert t act t2act
-            (Just Shift,          Shift              ) -> t2act
-            (Just Shift,          Reduce _ _         ) -> t2act
-            (Just (Reduce _ _),   Shift              ) -> M.insert t act t2act
+            (Just (Shift i),      Shift j            ) | i == j -> t2act
+            (Just (Shift i),      Shift j            ) | i /= j -> error "Shifting to different states"
+            (Just (Shift _),      Reduce _ _         ) -> t2act
+            (Just (Reduce _ _),   Shift _            ) -> M.insert t act t2act
 --            (Just (Reduce _ ss1), act'@(Reduce _ ss2)) -> if length ss1 < length ss2 then M.insert t act' t2act else t2act
             (Just act',           _                  ) -> raise_conflict t act' act
         f t2act cr ctx =
             let v = case cr of
-                    (_, _, T t : _)                  -> Just (S.singleton t, Shift)
+                    (_, _, T t : _)                  -> case M.lookup (T t) s2sid of
+                        Just sid -> Just (S.singleton t, Shift sid)
+                        Nothing  -> error $ "can't find goto for terminal " ++ show t
                     (n, ls, []) | n /= axiom         -> Just (ctx, Reduce n ls)
                     _ | (cr, ctx) == final_situation -> Just (ctx, Accept)
                     _                                -> Nothing
@@ -109,27 +113,28 @@ goto_table s2sid =
 
 lr1_to_lalr1 :: StateTable -> StateTable
 lr1_to_lalr1 =
-    let unite (sid1, (st1, s2sid1)) (sid2, (st2, s2sid2)) =
+    let unite (sid1, (st1, s1, s2sid1)) (sid2, (st2, s2, s2sid2)) =
             let sid   = min sid1 sid2
                 st    = M.foldlWithKey' (\ st cr ctx -> M.insertWith S.union cr ctx st) st1 st2
                 s2sid = M.foldlWithKey' (\ s2sid s sid -> M.insertWith min s sid s2sid) s2sid1 s2sid2
-            in  (sid, (st, s2sid))
-        f cr2sid_st_s2sid sid (st, s2sid) =
+                s     = if s1 == s2 then s1 else error $ "symbols associated with sids don't match"
+            in  (sid, (st, s, s2sid))
+        f cr2sid_st_s_s2sid sid (st, s, s2sid) =
             let cr = (S.fromList . M.keys) st
-            in  M.insertWith unite cr (sid, (st, s2sid)) cr2sid_st_s2sid
+            in  M.insertWith unite cr (sid, (st, s, s2sid)) cr2sid_st_s_s2sid
     in  M.fromList . M.elems . M.foldlWithKey' f M.empty
 
 
 state_table :: StateTable
 state_table =
-    let g (open, closed, result, max) st sid =
+    let g (open, closed, result, max) st (sid, s) =
             let (s2sid, open', max') = goto_function open closed st max
-                closed'              = M.insert st sid closed
-                result'              = M.insert sid (st, s2sid) result
+                closed'              = M.insert st (sid, s) closed
+                result'              = M.insert sid (st, s, s2sid) result
             in  (open', closed', result', max')
         f (open, _,      result, _  ) | open == M.empty = result
         f (open, closed, result, sid)                   = f $ M.foldlWithKey' g (M.empty, closed, result, sid) open
-    in  f (M.insert init_state 0 M.empty, M.empty, M.empty, 1)
+    in  f (M.insert init_state (0, T Tlambda) M.empty, M.empty, M.empty, 1)
 
 
 init_situation :: (Core, Context)
@@ -157,14 +162,15 @@ init_state =
     in  closing open
 
 
-goto_function :: M.HashMap State SID -> M.HashMap State SID -> State -> SID -> (M.HashMap Symbol SID, M.HashMap State SID, SID)
+goto_function :: M.HashMap State (SID, Symbol) -> M.HashMap State (SID, Symbol) -> State -> SID -> (M.HashMap Symbol SID, M.HashMap State (SID, Symbol), SID)
 goto_function open  _      st sid | st == M.empty = (M.empty, open, sid)
 goto_function open  closed st sid =
-    let f (s2sid, st2sid, max) s =
+    let f (s2sid, open, max) s =
             let st' = closing $ shift st s
             in  case M.lookup st' closed of
-                    Just sid -> (M.insert s sid s2sid, st2sid,                  max    )
-                    Nothing  -> (M.insert s max s2sid, M.insert st' max st2sid, max + 1)
+                    Just (sid, s') | s' == s || st' == M.empty -> (M.insert s sid s2sid, open, max)
+                    Just (_,   s')                             -> error $ "transitions to the same state on multiple symbols: " ++ show s ++ " and " ++ show s'
+                    Nothing                                    -> (M.insert s max s2sid, M.insert st' (max, s) open, max + 1)
     in  S.foldl' f (M.empty, open, sid) symbols
 
 

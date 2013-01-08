@@ -15,13 +15,13 @@ import LALR
 
 
 codegen :: LALRTable -> Verbosity -> String
-codegen tbl v = "" {-
-    let d0 = doc_includes
-        d1 = doc_defines
-        d2 = doc_symbols
-        d3 = verbose v $ doc_print_stack $$$ doc_print_buffer
-        d4 = doc_parse pda v
-    in  PP.render $ d0 $$$ d1 $$$ d2 $$$ d3 $$$ d4
+codegen tbl v =
+    PP.render $
+        doc_includes
+        $$$ doc_defines
+        $$$ doc_symbols
+        $$$ (verbose v $ doc_print_stack $$$ doc_print_buffer)
+        $$$ doc_parse tbl v
 
 
 doc_includes :: Doc
@@ -63,38 +63,19 @@ doc_print_buffer =
     in d0 $$ wrap_in_braces d1
 
 
-doc_parse :: PDA -> Verbosity -> Doc
-doc_parse pda v =
-    let (sll1_tbl, id2cmd) = restrict_to_sll1 (commands pda)
-        d0 = doc_signature
-        d1 = doc_init_table sll1_tbl
-        d2 = doc_init_stack
-        d3 = doc_loop id2cmd v
-        d4 = doc_return v
-        d5 = wrap_in_braces $ d1 $$$ d2 $$$ d3 $$ d4
-    in  d0 $$ d5
+doc_parse :: LALRTable -> Verbosity -> Doc
+doc_parse tbl v =
+    doc_signature
+    $$
+        (wrap_in_braces $
+        doc_init_stack
+        $$$ doc_goto 0
+        $$$ M.foldlWithKey' (\ doc sid (s, actions, gotos) -> doc $$$ doc_state sid s actions gotos) PP.empty tbl
+        )
 
 
 doc_signature :: Doc
 doc_signature = PP.text "bool parse (Symbol * p, Symbol * q)"
-
-
-doc_init_table :: M.HashMap (NonTerminal, Terminal) Int -> Doc
-doc_init_table tbl =
-    let d1 =
-            PP.text "int table "
-            <> PP.brackets (PP.int (S.size nonterminals))
-            <> PP.brackets (PP.int (S.size terminals))
-            <> PP.semi
-        f doc (n, t) k = doc
-            $$ PP.text "table "
-            <> PP.brackets ((PP.text . show) n)
-            <> PP.brackets ((PP.text . show) t)
-            <> PP.text " = "
-            <> PP.int k
-            <> PP.semi
-        d2 = M.foldlWithKey' f PP.empty tbl
-    in  d1 $$$ d2
 
 
 doc_init_stack :: Doc
@@ -111,8 +92,41 @@ doc_init_stack =
     in  d1 $$ d2 $$$ d3
 
 
-doc_loop :: M.HashMap Int [Symbol] -> Verbosity -> Doc
-doc_loop id2cmd v =
+doc_goto :: SID -> Doc
+doc_goto sid = PP.text "goto state_" <> PP.int sid <> PP.semi
+
+
+is_terminal :: Symbol -> Bool
+is_terminal (T _) = True
+is_terminal _     = False
+
+
+doc_state :: SID -> Symbol -> ActionTable -> GotoTable -> Doc
+doc_state sid s t2act n2sid =
+    PP.text "state_" <> PP.int sid <> PP.colon
+    $$ PP.nest 4
+        ( PP.text "stack = " <> PP.int sid <> PP.semi
+        $$ (if is_terminal s then PP.text "p++;" else PP.empty)
+        $$ PP.text "stack++;"
+        )
+    $$ PP.text "state_action_" <> PP.int sid <> PP.colon
+    $$ PP.nest 4
+--        let d0 = PP.text "*p"
+{-
+            f t act =
+                let val  = show t
+                    code = case act of
+                        Shift sid'  -> doc_goto sid
+                        Reduce n ss ->
+                        Accept      ->
+                        Error       ->
+                in  doc_casebreak val code
+            d1 = M.foldlWithKey' (\ doc t act -> doc $$ f t act) PP.empty t2act
+        in  doc_switch d0 d1
+-}
+          PP.empty
+
+{-
     let d0         = PP.text "p != q" -- "stack != stack_bottom && p != q"
         dd0        = doc_verbose v $ PP.text "print_stack (stack_bottom, stack);" $$ PP.text "print_buffer (p, q);"
         d_if       = PP.text "*stack == *p"
@@ -125,27 +139,8 @@ doc_loop id2cmd v =
         dd_else    = doc_verbose v $ PP.text "printf (\"rule %d\\n\", table [*stack][*p]);"
         d1         = doc_ifthenelse d_if (dd_then $$ d_then) (dd_else $$ d_else)
     in  doc_while d0 (dd0 $$ d1)
-
-
-doc_cases :: M.HashMap Int [Symbol] -> Doc
-doc_cases id2cmd =
-    let doc_symbol (N n) = (PP.text . show) n
-        doc_symbol (T t) = (PP.text . show) t
-        f doc k ss =
-            let doc' = case ss of
-                    []      -> PP.text "--stack;"
-                    s : ss' ->
-                        foldl' (\ d s -> PP.text "*stack++ = " <> doc_symbol s <> PP.semi $$ d) PP.empty ss'
-                        $$ PP.text "*stack = " <> doc_symbol s <> PP.semi
-            in  doc $$ doc_casebreak k doc'
-    in  M.foldlWithKey' f PP.empty id2cmd
-
-
-doc_return :: Verbosity -> Doc
-doc_return v =
-    doc_verbose v (PP.text "printf (\"SUCCESS\\n\");")
-    $$ PP.text "return true;"
 -}
+
 
 ----------------------------------------------------------------------
 
@@ -200,10 +195,10 @@ doc_switch d1 d2 =
     $$ (wrap_in_braces d2)
 
 
-doc_casebreak :: Int -> Doc -> Doc
-doc_casebreak k d =
-    PP.text "case " <> PP.int k <> PP.colon
-    $$ PP.nest 4 (d $$ PP.text "break;")
+doc_casebreak :: Doc -> Doc -> Doc
+doc_casebreak d1 d2 =
+    PP.text "case " <> d1 <> PP.colon
+    $$ PP.nest 4 (d2 $$ PP.text "break;")
 
 
 doc_default :: Doc -> Doc

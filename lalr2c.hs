@@ -41,7 +41,7 @@ main = do
         code = codegen tbl v
 
     mapM_
-        (\ (st, (action_tbl, goto_tbl)) -> do
+        (\ (st, (s, action_tbl, goto_tbl)) -> do
             print $ "state:::: " ++ show st
             print $ "ACTION:::: "
             mapM_ print (M.toList action_tbl)
