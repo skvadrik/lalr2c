@@ -5,11 +5,9 @@ import qualified Data.HashMap.Strict  as M
 import qualified Data.Set             as S
 import           Data.List                 (foldl')
 import           Data.Hashable
+import           Debug.Trace
 
-import Debug.Trace
-
-
-import Grammar
+import           Grammar
 
 
 data Verbosity = V0 | V1
@@ -18,12 +16,10 @@ instance Eq Verbosity where
     V1 == V1 = True
     _  == _  = False
 
-
 data CmdOptions = CmdOpts
     { dest      :: FilePath
     , verbosity :: Verbosity
     }
-
 
 data Action
     = Shift  SID
@@ -31,9 +27,11 @@ data Action
     | Accept
     | Error
     deriving (Show)
+
+type SID         = Int
+type RID         = Int
 type Core        = (NonTerminal, [Symbol], [Symbol])
 type Context     = S.Set Terminal
-type SID         = Int
 type State       = M.HashMap Core Context
 type StateTable  = M.HashMap SID (State, Symbol, M.HashMap Symbol SID)
 type GotoTable   = M.HashMap NonTerminal SID

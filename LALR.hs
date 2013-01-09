@@ -7,8 +7,6 @@ import qualified Data.Set            as S
 import qualified Data.HashMap.Strict as M
 import           Data.List                (foldl')
 
-import Control.DeepSeq
-
 import           Types
 import           Grammar
 
@@ -91,12 +89,12 @@ action_table state s2sid =
             (Just act',           _                  ) -> raise_conflict t act' act
         f t2act cr ctx =
             let v = case cr of
-                    (_, _, T t : _)                  -> case M.lookup (T t) s2sid of
+                    (_, _, T t : _)                                -> case M.lookup (T t) s2sid of
                         Just sid -> Just (S.singleton t, Shift sid)
                         Nothing  -> error $ "can't find goto for terminal " ++ show t
-                    (n, ls, []) | n /= axiom         -> Just (ctx, Reduce n ls)
-                    _ | (cr, ctx) == final_situation -> Just (ctx, Accept)
-                    _                                -> Nothing
+                    (n, ls, [])     | n /= axiom                   -> Just (ctx, Reduce n ls)
+                    _               | (cr, ctx) == final_situation -> Just (ctx, Accept)
+                    _                                              -> Nothing
             in  case v of
                     Just (ts, act) -> S.foldl' (try_insert act) t2act ts
                     Nothing        -> t2act
@@ -112,6 +110,33 @@ goto_table s2sid =
 
 
 lr1_to_lalr1 :: StateTable -> StateTable
+lr1_to_lalr1 sid2st_s_s2sid =
+    let unite (st1, sids1) (st2, sids2) =
+            let st    = M.foldlWithKey' (\ st cr ctx -> M.insertWith S.union cr ctx st) st1 st2
+                sids  = S.union sids1 sids2
+            in  (st, sids)
+        f1 cr2st_sids sid (st, _, _) =
+            let cr = (S.fromList . M.keys) st
+            in  M.insertWith unite cr (st, S.singleton sid) cr2st_sids
+        f2 sid2st_sid (st, sids) =
+            let min = S.findMin sids
+            in  S.foldl' (\ m i -> M.insertWith (error "state conflict while reducing to LALR") i (st, min) m) sid2st_sid sids
+        cr2st_sids = M.foldlWithKey' f1 M.empty sid2st_s_s2sid
+        sid2st_sid = M.foldl' f2 M.empty cr2st_sids
+        f3 sid2st_s_s2sid sid (_, s, s2sid) =
+            let lookup sid = M.lookupDefault (error $ "can't find SID for SID " ++ show sid) sid sid2st_sid
+                (st1, sid1) = lookup sid
+                s2sid1      = M.map (snd . lookup) s2sid
+            in  case M.lookup sid1 sid2st_s_s2sid of
+                    Nothing                -> M.insert sid1 (st1, s, s2sid1) sid2st_s_s2sid
+                    Just (st2, s2, s2sid2) -> if st1 == st2 && s == s2 && s2sid1 == s2sid2
+                        then sid2st_s_s2sid
+                        else error "states conflict"
+    in  M.foldlWithKey' f3 M.empty sid2st_s_s2sid
+
+
+{-
+lr1_to_lalr1 :: StateTable -> StateTable
 lr1_to_lalr1 =
     let unite (sid1, (st1, s1, s2sid1)) (sid2, (st2, s2, s2sid2)) =
             let sid   = min sid1 sid2
@@ -123,18 +148,22 @@ lr1_to_lalr1 =
             let cr = (S.fromList . M.keys) st
             in  M.insertWith unite cr (sid, (st, s, s2sid)) cr2sid_st_s_s2sid
     in  M.fromList . M.elems . M.foldlWithKey' f M.empty
+-}
 
 
 state_table :: StateTable
 state_table =
     let g (open, closed, result, max) st (sid, s) =
-            let (s2sid, open', max') = goto_function open closed st max
-                closed'              = M.insert st (sid, s) closed
+            let (s2sid, open', closed', max') = goto_function open closed st max
                 result'              = M.insert sid (st, s, s2sid) result
             in  (open', closed', result', max')
         f (open, _,      result, _  ) | open == M.empty = result
         f (open, closed, result, sid)                   = f $ M.foldlWithKey' g (M.empty, closed, result, sid) open
-    in  f (M.insert init_state (0, T Tlambda) M.empty, M.empty, M.empty, 1)
+        open   = M.insert init_state (1, T Tlambda) M.empty
+        closed = M.insert empty_state (0, T Tlambda) open
+        result = M.insert 0 (empty_state, T Tlambda, goto_empty) M.empty
+        max    = 2
+    in  f (open, closed, result, max)
 
 
 init_situation :: (Core, Context)
@@ -162,16 +191,26 @@ init_state =
     in  closing open
 
 
-goto_function :: M.HashMap State (SID, Symbol) -> M.HashMap State (SID, Symbol) -> State -> SID -> (M.HashMap Symbol SID, M.HashMap State (SID, Symbol), SID)
-goto_function open  _      st sid | st == M.empty = (M.empty, open, sid)
-goto_function open  closed st sid =
-    let f (s2sid, open, max) s =
+empty_state :: State
+empty_state = M.empty
+
+
+goto_empty :: M.HashMap Symbol SID
+goto_empty = S.foldl' (\ m s -> M.insert s 0 m) M.empty symbols
+
+
+goto_function :: M.HashMap State (SID, Symbol) -> M.HashMap State (SID, Symbol) -> State -> SID
+    -> (M.HashMap Symbol SID, M.HashMap State (SID, Symbol), M.HashMap State (SID, Symbol), SID)
+goto_function open closed st sid | st == M.empty = (goto_empty, open, closed, sid)
+goto_function open closed st sid =
+    let f (s2sid, open, closed, max) s =
             let st' = closing $ shift st s
             in  case M.lookup st' closed of
-                    Just (sid, s') | s' == s || st' == M.empty -> (M.insert s sid s2sid, open, max)
-                    Just (_,   s')                             -> error $ "transitions to the same state on multiple symbols: " ++ show s ++ " and " ++ show s'
-                    Nothing                                    -> (M.insert s max s2sid, M.insert st' (max, s) open, max + 1)
-    in  S.foldl' f (M.empty, open, sid) symbols
+                    Just (sid', s') | s' == s            -> (M.insert s sid' s2sid, open, closed, max)
+                    Just (sid', _)  | st' == empty_state -> (M.insert s sid' s2sid, open, closed, max) -- at start lambda leads to empty state
+                    Just (_,    _)                       -> error "transitions to the same state on multiple symbols"
+                    Nothing                              -> (M.insert s max s2sid, M.insert st' (max, s) open, M.insert st' (max, s) closed, max + 1)
+    in  S.foldl' f (M.empty, open, closed, sid) symbols
 
 
 shift :: State -> Symbol -> State

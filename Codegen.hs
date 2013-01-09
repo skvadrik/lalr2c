@@ -4,14 +4,13 @@ module Codegen
 
 
 import qualified Data.HashMap.Strict as M
-import           Data.List                 (foldl')
 import qualified Data.Set            as S
+import           Data.List                 (foldl')
 import qualified Text.PrettyPrint    as PP
 import           Text.PrettyPrint          (Doc, ($$), (<>), ($+$))
 
 import Grammar
 import Types
-import LALR
 
 
 codegen :: LALRTable -> Verbosity -> String
@@ -45,9 +44,9 @@ doc_symbols =
 
 doc_print_stack :: Doc
 doc_print_stack =
-    let d0 = PP.text "void print_stack (const Symbol * bottom, Symbol * top)"
+    let d0 = PP.text "void print_stack (const int * bottom, int * top)"
         d1 =
-            PP.text "Symbol * p = top;"
+            PP.text "int * p = top;"
             $$ PP.text "printf (\"stack:\\n\");"
             $$ doc_while (PP.text "p - bottom >= 0") (PP.text "printf (\"\\t%d\\n\", *p--);")
     in d0 $$ wrap_in_braces d1
@@ -68,22 +67,24 @@ doc_parse tbl v =
     doc_signature
     $$ ( wrap_in_braces $
         doc_init_stack
-        $$$ doc_goto (PP.text "state_" <> PP.int 0)
+        $$$ doc_goto (PP.text "state_" <> PP.int 1)
         $$$ M.foldlWithKey' (\ doc sid (s, actions, gotos) -> doc $$$ (doc_state v) sid s actions gotos) PP.empty tbl
+        $$$ M.foldlWithKey' (\ doc (n, r) rid -> doc $$$ (doc_rule v) rid n r) PP.empty rule2rid
+        $$$ S.foldl' (\ doc n -> doc $$$ doc_nonterminal v tbl n) PP.empty nonterminals
     )
 
 
 doc_signature :: Doc
-doc_signature = PP.text "bool parse (Symbol * p, Symbol * q)"
+doc_signature = PP.text "bool parse (Symbol * p)"
 
 
 doc_init_stack :: Doc
 doc_init_stack =
     let d1 =
-            PP.text "Symbol * stack = new Symbol "
+            PP.text "int * stack = new int "
             <> PP.brackets (PP.text "STACK_SIZE")
             <> PP.semi
-        d2 = PP.text "const Symbol * stack_bottom = &stack[0];"
+        d2 = PP.text "const int * stack_bottom = &stack[0];"
         d3 =
             PP.text "*stack = "
             <> (PP.text . show) axiom
@@ -104,7 +105,7 @@ doc_state :: Verbosity -> SID -> Symbol -> ActionTable -> GotoTable -> Doc
 doc_state v sid s t2act n2sid =
     PP.text "state_" <> PP.int sid <> PP.colon
     $$ PP.nest 4
-        ( PP.text "stack = " <> PP.int sid <> PP.semi
+        ( PP.text "*stack = " <> PP.int sid <> PP.semi
         $$ (if is_terminal s then PP.text "p++;" else PP.empty)
         $$ PP.text "stack++;"
         )
@@ -115,16 +116,56 @@ doc_state v sid s t2act n2sid =
                 let d = (map (PP.text . show) . S.toList) ts
                 in  case act of
                         Shift sid'  -> doc_multicasebreak d $ doc_goto (PP.text "state_" <> PP.int sid')
-                        Reduce n ss -> doc_multicasebreak d $ doc_goto (PP.text "reduce_" <> PP.int 9999)
+                        Reduce n ss -> doc_multicasebreak d $ doc_goto (PP.text "reduce_" <> PP.int (get_rid (n, ss)))
                         Accept      -> doc_multicasebreak d $
                             (doc_verbose v $ PP.text "printf (\"SUCCESS\\n\");")
                             $$ PP.text "return true;"
                         Error       -> PP.empty
             act2ts = M.foldlWithKey' (\ m t act -> M.insertWith S.union act (S.singleton t) m) M.empty t2act
             d1 = M.foldlWithKey' (\ doc act ts -> doc $$ f ts act) PP.empty act2ts
-            d2 = doc_default $ doc_verbose v (PP.text "printf (\"FAIL\\n\");") $$ PP.text "return false;"
+            d2 = doc_default $
+                (doc_verbose v $ PP.text "printf (\"FAIL\\n\");")
+                $$ PP.text "return false;"
         in  doc_switch d0 (d1 $$ d2)
     )
+
+
+doc_rule :: Verbosity -> RID -> NonTerminal -> [Symbol] -> Doc
+doc_rule v rid n ss =
+    PP.text "reduce_" <> PP.int rid <> PP.colon
+    $$ PP.nest 4
+        ( PP.text "stack -= " <> PP.int (length ss) <> PP.semi
+        $$ doc_goto (PP.text ("nonterminal_" ++ show n))
+        )
+
+
+doc_nonterminal :: Verbosity -> LALRTable -> NonTerminal -> Doc
+doc_nonterminal v tbl n =
+    PP.text ("nonterminal_" ++ show n) <> PP.colon
+    $$ PP.nest 4 (
+        let d0 = PP.text "*(stack - 1)"
+            f1 m sid (_, _, gotos) =
+                let sid' = M.lookupDefault (error "can't find nonterminal") n gotos
+                in  M.insertWith S.union sid' (S.singleton sid) m
+            sid2sids = M.foldlWithKey' f1 M.empty tbl
+            f2 0   _    = PP.empty
+            f2 sid sids =
+                let d = (map (PP.text . show) . S.toList) sids
+                in  doc_multicasebreak d $ doc_goto (PP.text "state_" <> PP.int sid)
+            d1 = M.foldlWithKey' (\ doc sid sids -> doc $$ f2 sid sids) PP.empty sid2sids
+            d2 = doc_default $ doc_goto (PP.text "state_0")
+        in  doc_switch d0 (d1 $$ d2)
+    )
+
+
+rule2rid :: M.HashMap (NonTerminal, [Symbol]) RID
+rule2rid =
+    let f (r2id, id) n = foldl' (\ (m, i) r -> (M.insert (n, r) i m, i + 1)) (r2id, id) (rules n)
+    in  fst $ S.foldl' f (M.empty, 0) nonterminals
+
+
+get_rid :: (NonTerminal, [Symbol]) -> RID
+get_rid x = M.lookupDefault (error "missing RID for rule") x rule2rid
 
 
 ----------------------------------------------------------------------

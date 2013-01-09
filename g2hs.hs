@@ -166,7 +166,7 @@ doc_rules rs =
     let doc_alts =
             ( PP.brackets
             . PP.vcat
-            . PP.punctuate (PP.text ", ")
+            . PP.punctuate (PP.text ",")
             . map
                 (\ cs ->
                     ( PP.brackets
@@ -190,13 +190,13 @@ doc_axiom n = PP.text "axiom :: NonTerminal" $$ PP.text "axiom = " <> nontermina
 doc_terminals :: S.Set Terminal -> Doc
 doc_terminals ts =
     PP.text "terminals :: S.Set Terminal"
-    $$ PP.text "terminals = S.fromList " <> (PP.brackets . PP.vcat . PP.punctuate (PP.text ", ") . map terminal2name . S.toList) ts
+    $$ PP.text "terminals = S.fromList " <> (PP.brackets . PP.vcat . PP.punctuate (PP.text ",") . map terminal2name . S.toList) ts
 
 
 doc_nonterminals :: S.Set NonTerminal -> Doc
 doc_nonterminals ns =
     PP.text "nonterminals :: S.Set NonTerminal"
-    $$ PP.text "nonterminals = S.fromList " <> (PP.brackets . PP.vcat . PP.punctuate (PP.text ", ") . map nonterminal2name . S.toList) ns
+    $$ PP.text "nonterminals = S.fromList " <> (PP.brackets . PP.vcat . PP.punctuate (PP.text ",") . map nonterminal2name . S.toList) ns
 
 
 doc_symbols :: Doc

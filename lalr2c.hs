@@ -1,16 +1,13 @@
 import           Control.Monad            (mapM_)
 import           Data.List                (foldl')
 import qualified Data.HashMap.Strict as M
-import qualified Data.Set            as S
 import           System.Environment       (getArgs)
 import           Control.Monad            (when)
 import           System.Console.GetOpt
 
-import Debug.Trace
-
-import Types
-import LALR
-import Codegen
+import           Types
+import           LALR
+import           Codegen
 
 
 options :: [OptDescr (CmdOptions -> CmdOptions)]
@@ -39,16 +36,15 @@ main = do
 
     let tbl  = lalr1_table
         code = codegen tbl v
-
+{-
     mapM_
         (\ (st, (s, action_tbl, goto_tbl)) -> do
             print $ "state:::: " ++ show st
             print $ "ACTION:::: "
             mapM_ print (M.toList action_tbl)
-            print $ "GOTO:::: "
             mapM_ print (M.toList goto_tbl)
         ) (M.toList tbl)
-
+-}
     print $ M.size tbl
 
     writeFile fdest code
