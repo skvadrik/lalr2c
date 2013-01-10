@@ -83,8 +83,8 @@ action_table state s2sid =
             (Just Error,          _                  ) -> M.insert t act t2act
             (Just (Shift i),      Shift j            ) | i == j -> t2act
             (Just (Shift i),      Shift j            ) | i /= j -> error "Shifting to different states"
-            (Just (Shift _),      Reduce _ _         ) -> t2act
-            (Just (Reduce _ _),   Shift _            ) -> M.insert t act t2act
+            (Just (Shift _),      Reduce _ _         ) -> trace' "shift/reduce" `seq` t2act
+            (Just (Reduce _ _),   Shift _            ) -> trace' "shift/reduce" `seq` M.insert t act t2act
 --            (Just (Reduce _ ss1), act'@(Reduce _ ss2)) -> if length ss1 < length ss2 then M.insert t act' t2act else t2act
             (Just act',           _                  ) -> raise_conflict t act' act
         f t2act cr ctx =

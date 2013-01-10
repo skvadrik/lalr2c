@@ -3,6 +3,7 @@ module Codegen
     ) where
 
 
+import           Data.Char                 (toUpper, isAlphaNum)
 import qualified Data.HashMap.Strict as M
 import qualified Data.Set            as S
 import           Data.List                 (foldl')
@@ -15,7 +16,7 @@ import Types
 
 codegen :: LALRTable -> Verbosity -> FilePath -> FilePath -> IO ()
 codegen tbl v fcpp fh = do
-    writeFile fh $ PP.render $
+    writeFile fh $ PP.render $ wrap_in_define fh $
         doc_defines
         $$$ doc_tokens
         $$$ doc_protos
@@ -23,6 +24,15 @@ codegen tbl v fcpp fh = do
         doc_includes fh
         $$$ (verbose v $ doc_print_stack $$$ doc_print_buffer)
         $$$ doc_parse tbl v
+
+
+wrap_in_define :: FilePath -> Doc -> Doc
+wrap_in_define fp d =
+    let d' = PP.text $ '_' : map (\ c -> if isAlphaNum c then toUpper c else '_') fp
+    in  PP.text "#ifndef " <> d'
+        $$ PP.text "#define " <> d'
+        $$$ d
+        $$$ PP.text "#endif // " <> d'
 
 
 doc_includes :: FilePath -> Doc
@@ -39,8 +49,27 @@ doc_defines =
 
 doc_tokens :: Doc
 doc_tokens =
-    let tokens = (PP.vcat . PP.punctuate PP.comma . map PP.text . map show . S.toList) terminals
-    in  PP.text "enum Token" $$ wrap_in_braces tokens <> PP.semi
+    let tokens =
+            ( PP.vcat
+            . map
+                ( (\ t -> PP.text "TOKEN(" <> PP.text t <> PP.text ") \\") 
+                . show
+                )
+            . S.toList
+            ) terminals
+    in  PP.text "#define TOKENS \\"
+        $$ PP.nest 4 tokens
+        $$$ PP.text "#define TOKEN(x) x#,"
+        $$ PP.text "static const char * token_names [] ="
+        $$ ( wrap_in_braces $ PP.text "TOKENS") <> PP.semi
+        $$ PP.text "#undef TOKEN"
+        $$$ PP.text "#define TOKEN(x) x,"
+        $$ PP.text "enum Token"
+        $$ ( wrap_in_braces $
+            PP.text "TOKENS"
+            $$ PP.text "TOKEN_NUMBER"
+            ) <> PP.semi
+        $$ PP.text "#undef TOKEN"
 
 
 doc_protos :: Doc
@@ -98,19 +127,10 @@ doc_parse_signature = PP.text "bool parse (Token * p)"
 
 doc_init_stack :: Doc
 doc_init_stack =
-    let d1 =
-            PP.text "int * stack = new int "
-            <> PP.brackets (PP.text "STACK_SIZE")
-            <> PP.semi
-        d2 = PP.text "const int * stack_bottom = &stack[0];"
-    in  d1 $$ d2
-{-
-        d3 =
-            PP.text "*stack = "
-            <> (PP.text . show) axiom
-            <> PP.semi
-    in  d1 $$ d2 $$$ d3
--}
+    PP.text "int * stack = new int "
+    <> PP.brackets (PP.text "STACK_SIZE")
+    <> PP.semi
+    $$ PP.text "const int * stack_bottom = &stack[0];"
 
 
 doc_goto :: Doc -> Doc

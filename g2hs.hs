@@ -144,10 +144,10 @@ terminal2name (TString t) =
             '}'                          -> "CParens"
             '['                          -> "OBracket"
             ']'                          -> "CBracket"
-            '='                          -> "CEq"
-            '^'                          -> "CHat"
-            '&'                          -> "CAmp"
-            '%'                          -> "CPercent"
+            '='                          -> "Eq"
+            '^'                          -> "Hat"
+            '&'                          -> "Amp"
+            '%'                          -> "Percent"
             c                            -> error $ "unknown symbol in terminal: " ++ [c]
     in  PP.text $ "T" ++ concatMap f t
 
