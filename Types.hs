@@ -18,6 +18,7 @@ instance Eq Verbosity where
 
 data CmdOptions = CmdOpts
     { dest      :: FilePath
+    , hdr       :: FilePath
     , verbosity :: Verbosity
     }
 

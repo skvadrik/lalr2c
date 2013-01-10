@@ -13,19 +13,22 @@ import Grammar
 import Types
 
 
-codegen :: LALRTable -> Verbosity -> String
-codegen tbl v =
-    PP.render $
-        doc_includes
-        $$$ doc_defines
-        $$$ doc_symbols
+codegen :: LALRTable -> Verbosity -> FilePath -> FilePath -> IO ()
+codegen tbl v fcpp fh = do
+    writeFile fh $ PP.render $
+        doc_defines
+        $$$ doc_tokens
+        $$$ doc_protos
+    writeFile fcpp $ PP.render $
+        doc_includes fh
         $$$ (verbose v $ doc_print_stack $$$ doc_print_buffer)
         $$$ doc_parse tbl v
 
 
-doc_includes :: Doc
-doc_includes =
+doc_includes :: FilePath -> Doc
+doc_includes fp =
     PP.text "#include <stdio.h>"
+    $$$ PP.text "#include \"" <> PP.text fp <> PP.char '"'
 
 
 doc_defines :: Doc
@@ -34,48 +37,63 @@ doc_defines =
     $$ PP.text "#define VERBOSE false"
 
 
-doc_symbols :: Doc
-doc_symbols =
-    let tsymbols = (map show . S.toList) terminals
-        nsymbols = (map show . S.toList) nonterminals
-        symbols = (PP.vcat . PP.punctuate PP.comma . map PP.text) (tsymbols ++ nsymbols)
-    in  PP.text "enum Symbol" $$ wrap_in_braces symbols <> PP.semi
+doc_tokens :: Doc
+doc_tokens =
+    let tokens = (PP.vcat . PP.punctuate PP.comma . map PP.text . map show . S.toList) terminals
+    in  PP.text "enum Token" $$ wrap_in_braces tokens <> PP.semi
+
+
+doc_protos :: Doc
+doc_protos =
+    doc_parse_signature <> PP.semi
+    $$ doc_print_buffer_signature <> PP.semi
+    $$ doc_print_stack_signature <> PP.semi
+
+
+doc_print_stack_signature :: Doc
+doc_print_stack_signature =
+    PP.text "void print_stack (const int * bottom, int * top)"
 
 
 doc_print_stack :: Doc
 doc_print_stack =
-    let d0 = PP.text "void print_stack (const int * bottom, int * top)"
-        d1 =
-            PP.text "int * p = top;"
-            $$ PP.text "printf (\"stack:\\n\");"
-            $$ doc_while (PP.text "p - bottom >= 0") (PP.text "printf (\"\\t%d\\n\", *p--);")
-    in d0 $$ wrap_in_braces d1
+    doc_print_buffer_signature
+    $$ wrap_in_braces
+        ( PP.text "int * p = top;"
+        $$ PP.text "printf (\"stack:\\n\");"
+        $$ doc_while (PP.text "p - bottom >= 0") (PP.text "printf (\"\\t%d\\n\", *p--);")
+        )
+
+
+doc_print_buffer_signature :: Doc
+doc_print_buffer_signature =
+    PP.text "void print_buffer (Token * begin, Token * end)"
 
 
 doc_print_buffer :: Doc
 doc_print_buffer =
-    let d0 = PP.text "void print_buffer (Symbol * begin, Symbol * end)"
-        d1 =
-            PP.text "Symbol * p = begin;"
-            $$ PP.text "printf (\"buffer:\\n\");"
-            $$ doc_while (PP.text "end - p >= 0") (PP.text "printf (\"\\t%d\\n\", *p++);")
-    in d0 $$ wrap_in_braces d1
+    doc_print_buffer_signature
+    $$ wrap_in_braces
+        ( PP.text "Token * p = begin;"
+        $$ PP.text "printf (\"buffer:\\n\");"
+        $$ doc_while (PP.text "end - p >= 0") (PP.text "printf (\"\\t%d\\n\", *p++);")
+        )
 
 
 doc_parse :: LALRTable -> Verbosity -> Doc
 doc_parse tbl v =
-    doc_signature
-    $$ ( wrap_in_braces $
-        doc_init_stack
+    doc_parse_signature
+    $$ wrap_in_braces
+        ( doc_init_stack
         $$$ doc_goto (PP.text "state_" <> PP.int 1)
         $$$ M.foldlWithKey' (\ doc sid (s, actions, gotos) -> doc $$$ (doc_state v) sid s actions gotos) PP.empty tbl
         $$$ M.foldlWithKey' (\ doc (n, r) rid -> doc $$$ (doc_rule v) rid n r) PP.empty rule2rid
         $$$ S.foldl' (\ doc n -> doc $$$ doc_nonterminal v tbl n) PP.empty nonterminals
-    )
+        )
 
 
-doc_signature :: Doc
-doc_signature = PP.text "bool parse (Symbol * p)"
+doc_parse_signature :: Doc
+doc_parse_signature = PP.text "bool parse (Token * p)"
 
 
 doc_init_stack :: Doc
@@ -85,11 +103,14 @@ doc_init_stack =
             <> PP.brackets (PP.text "STACK_SIZE")
             <> PP.semi
         d2 = PP.text "const int * stack_bottom = &stack[0];"
+    in  d1 $$ d2
+{-
         d3 =
             PP.text "*stack = "
             <> (PP.text . show) axiom
             <> PP.semi
     in  d1 $$ d2 $$$ d3
+-}
 
 
 doc_goto :: Doc -> Doc

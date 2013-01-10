@@ -135,22 +135,6 @@ lr1_to_lalr1 sid2st_s_s2sid =
     in  M.foldlWithKey' f3 M.empty sid2st_s_s2sid
 
 
-{-
-lr1_to_lalr1 :: StateTable -> StateTable
-lr1_to_lalr1 =
-    let unite (sid1, (st1, s1, s2sid1)) (sid2, (st2, s2, s2sid2)) =
-            let sid   = min sid1 sid2
-                st    = M.foldlWithKey' (\ st cr ctx -> M.insertWith S.union cr ctx st) st1 st2
-                s2sid = M.foldlWithKey' (\ s2sid s sid -> M.insertWith min s sid s2sid) s2sid1 s2sid2
-                s     = if s1 == s2 then s1 else error $ "symbols associated with sids don't match"
-            in  (sid, (st, s, s2sid))
-        f cr2sid_st_s_s2sid sid (st, s, s2sid) =
-            let cr = (S.fromList . M.keys) st
-            in  M.insertWith unite cr (sid, (st, s, s2sid)) cr2sid_st_s_s2sid
-    in  M.fromList . M.elems . M.foldlWithKey' f M.empty
--}
-
-
 state_table :: StateTable
 state_table =
     let g (open, closed, result, max) st (sid, s) =
@@ -238,10 +222,8 @@ closing_ open closed                   =
                 f (xs, ys) r = case r of
                     N _ : _ ->
                         let xs' = case M.lookup (n, [], r) ys of
-                                Just ctx'' ->
-                                    let ctx''' = S.difference ctx' ctx''
-                                    in  if ctx''' == S.empty then xs else M.insertWith S.union (n, [], r) ctx''' xs
-                                Nothing    -> M.insertWith S.union (n, [], r) ctx' xs
+                                Just ctx'' | S.isSubsetOf ctx' ctx'' -> xs
+                                _                                    -> M.insertWith S.union (n, [], r) ctx' xs
                         in  (xs', ys)
                     _       ->
                         let ys' = M.insertWith S.union (n, [], r) ctx' ys
@@ -250,14 +232,6 @@ closing_ open closed                   =
             in  foldl' f (open, closed') (rules n)
         (open', closed') = M.foldlWithKey' close_state (M.empty, closed) open
     in  closing_ open' closed'
-
-
-{-
-                        let xs' = case M.lookup (n, [], r) ys of
-                                Just ctx'' | S.isSubsetOf ctx' ctx'' -> xs
-                                _                                    -> M.insertWith S.union (n, [], r) ctx' xs
-                        in  (xs', ys)
--}
 
 
 
