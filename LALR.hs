@@ -85,7 +85,7 @@ action_table state s2sid =
             (Just (Shift i),      Shift j            ) | i /= j -> error "Shifting to different states"
             (Just (Shift _),      Reduce _ _         ) -> trace' "shift/reduce" `seq` t2act
             (Just (Reduce _ _),   Shift _            ) -> trace' "shift/reduce" `seq` M.insert t act t2act
---            (Just (Reduce _ ss1), act'@(Reduce _ ss2)) -> if length ss1 < length ss2 then M.insert t act' t2act else t2act
+            (Just (Reduce _ ss1), act'@(Reduce _ ss2)) -> trace' "reduce/reduce" `seq` if length ss1 < length ss2 then M.insert t act' t2act else t2act
             (Just act',           _                  ) -> raise_conflict t act' act
         f t2act cr ctx =
             let v = case cr of
@@ -143,7 +143,7 @@ state_table =
             in  (open', closed', result', max')
         f (open, _,      result, _  ) | open == M.empty = result
         f (open, closed, result, sid)                   = f $ M.foldlWithKey' g (M.empty, closed, result, sid) open
-        open   = M.insert init_state (1, T Tlambda) M.empty
+        open   = M.insert init_state (1, N axiom) M.empty
         closed = M.insert empty_state (0, T Tlambda) open
         result = M.insert 0 (empty_state, T Tlambda, goto_empty) M.empty
         max    = 2
