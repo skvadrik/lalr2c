@@ -180,7 +180,7 @@ doc_rid2rule rs =
             <> doc_rhs ss
     in  PP.text "rid2rule :: RID -> [Symbol]"
         $$ (PP.vcat . map doc_one) rs
-        $$ PP.text "rid2rule _ = error \"RID exceeding maximum possible value\""
+        $$ PP.text "rid2rule rid = error $ \"RID exceeding maximum possible value: \" ++ show rid"
 
 
 doc_n2rules :: [(Int, NonTerminal, [Symbol])] -> Doc

@@ -6,6 +6,7 @@ module LALR
 import qualified Data.Set            as S
 import qualified Data.HashMap.Strict as M
 import           Data.List                (foldl')
+import           Text.Printf
 
 import           Types
 import           Grammar
@@ -75,19 +76,28 @@ raise_conflict t act1 act2 = error $ concat
     ]
 
 
+show_shift_reduce :: RID -> RID -> String
+show_shift_reduce i j = printf "shift/reduce:  (%d) %s vs (%d) %s" i ((show . rid2rule) i) j ((show . rid2rule) j)
+
+
+show_reduce_reduce :: RID -> RID -> String
+show_reduce_reduce i j = printf "reduce/reduce: (%d) %s vs (%d) %s" i ((show . rid2rule) i) j ((show . rid2rule) j)
+
+
 action_table :: LALR1State -> M.HashMap Symbol SID -> ActionTable
 action_table state s2sid =
 -- проверь эту хрень с точки зрения логики. шифты особенно. не должны ли они быть уникальны по построению и т.д.
     let try_insert act t2act t = case (M.lookup t t2act, act) of
-            (Nothing,             _                  ) -> M.insert t act t2act
-            (Just Error,          _                  ) -> M.insert t act t2act
-            (Just (Shift i),      Shift j            ) | i == j -> t2act
-            (Just (Shift i),      Shift j            ) | i /= j -> error "Shifting to different states"
-            (Just (Shift _),      Reduce _           ) -> trace' "shift/reduce" `seq` t2act
-            (Just (Reduce _),     Shift _            ) -> trace' "shift/reduce" `seq` M.insert t act t2act
-            (Just (Reduce rid),   act'@(Reduce rid') ) -> trace' "reduce/reduce" `seq` if (length . rid2rule) rid < (length . rid2rule) rid'
-                then M.insert t act' t2act
-                else t2act
+            (Nothing,         _              ) -> M.insert t act t2act
+            (Just Error,      _              ) -> M.insert t act t2act
+            (Just (Shift i),  Shift j        ) | i == j -> t2act
+            (Just (Shift i),  Shift j        ) | i /= j -> error "Shifting to different states"
+            (Just (Shift i),  Reduce j       ) -> trace' (show_shift_reduce  i j) `seq` t2act
+            (Just (Reduce i), Shift j        ) -> trace' (show_shift_reduce  j i) `seq` M.insert t act t2act
+            (Just (Reduce i), act'@(Reduce j)) -> trace' (show_reduce_reduce i j) `seq`
+                if (length . rid2rule) i < (length . rid2rule) j
+                    then M.insert t act' t2act
+                    else t2act
             (Just act',           _                  ) -> raise_conflict t act' act
         f t2act cr@(rid, _) ctx =
             let v = case core2rhs cr of
