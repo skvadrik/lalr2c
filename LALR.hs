@@ -137,13 +137,17 @@ lalr1_state_table =
 
 propagate :: LookaheadTable -> LookaheadTable
 propagate m =
-    let f3 ctx m (sid, cr) = M.adjust (M.adjust (\ (ctx', v) -> (S.union ctx' ctx, v)) cr) sid m
-        f2 m (ctx, sidcrs) = S.foldl' (f3 ctx) m sidcrs
-        f1 m cr2ctx_sidcrs = M.foldl' f2 m cr2ctx_sidcrs
-        m' = M.foldl' f1 m m
-    in  if m' == m
-            then m
-            else propagate m'
+    let f3 ctx (m, end) (sid, cr) =
+            let ctx' = (fst . M.lookupDefault undefined cr . M.lookupDefault undefined sid) m
+            in  if S.isSubsetOf ctx ctx'
+                    then (m, end)
+                    else (M.adjust (M.adjust (\ (ctx', v) -> (S.union ctx' ctx, v)) cr) sid m, False)
+        f2 (m, end) (ctx, sidcrs) = S.foldl' (f3 ctx) (m, end) sidcrs
+        f1 (m, end) cr2ctx_sidcrs = M.foldl' f2 (m, end) cr2ctx_sidcrs
+        f0 m = M.foldl' f1 (m, True) m
+    in  case f0 m of
+            (_,  True ) -> m
+            (m', False) -> propagate m'
 
 
 lookahead_table :: LookaheadTable
