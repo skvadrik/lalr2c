@@ -14,7 +14,7 @@ import Grammar
 import Types
 
 
-codegen :: LALRTable -> Verbosity -> FilePath -> FilePath -> IO ()
+codegen :: LALR1Table -> Verbosity -> FilePath -> FilePath -> IO ()
 codegen tbl v fcpp fh = do
     writeFile fh $ PP.render $ wrap_in_define fh $
         doc_defines
@@ -110,14 +110,14 @@ doc_print_buffer =
         )
 
 
-doc_parse :: LALRTable -> Verbosity -> Doc
+doc_parse :: LALR1Table -> Verbosity -> Doc
 doc_parse tbl v =
     doc_parse_signature
     $$ wrap_in_braces
         ( doc_init_stack
         $$$ doc_goto (PP.text "state_" <> PP.int 1)
         $$$ M.foldlWithKey' (\ doc sid (s, actions, gotos) -> doc $$$ (doc_state v) sid s actions gotos) PP.empty tbl
-        $$$ M.foldlWithKey' (\ doc (n, r) rid -> doc $$$ (doc_rule v) rid n r) PP.empty rule2rid
+        $$$ foldl' (\ doc (rid, n, r) -> doc $$$ (doc_rule v) rid n r) PP.empty rules
         $$$ S.foldl' (\ doc n -> doc $$$ doc_nonterminal v tbl n) PP.empty nonterminals
         )
 
@@ -144,14 +144,14 @@ is_terminal _     = False
 
 
 doc_state :: Verbosity -> SID -> Symbol -> ActionTable -> GotoTable -> Doc
-doc_state v sid s t2act n2sid =
+doc_state v sid s t2act _ =
     let d0 = PP.text "*p"
         f ts act =
             let d = (map (PP.text . show) . S.toList) ts
             in  case act of
-                    Shift sid'  -> doc_multicase d $ doc_goto (PP.text "state_" <> PP.int sid')
-                    Reduce n ss -> doc_multicase d $ doc_goto (PP.text "reduce_" <> PP.int (get_rid (n, ss)))
-                    Accept      -> doc_multicase d $
+                    Shift sid' -> doc_multicase d $ doc_goto (PP.text "state_" <> PP.int sid')
+                    Reduce rid -> doc_multicase d $ doc_goto (PP.text "reduce_" <> PP.int rid)
+                    Accept     -> doc_multicase d $
                         (doc_verbose v $ PP.text "printf (\"SUCCESS\\n\");")
                         $$ PP.text "return true;"
                     Error       -> PP.empty
@@ -188,7 +188,7 @@ doc_rule v rid n ss =
         )
 
 
-doc_nonterminal :: Verbosity -> LALRTable -> NonTerminal -> Doc
+doc_nonterminal :: Verbosity -> LALR1Table -> NonTerminal -> Doc
 doc_nonterminal v tbl n =
     let d0 = PP.text "*(stack - 1)"
         f1 m sid (_, _, gotos) =
@@ -206,16 +206,6 @@ doc_nonterminal v tbl n =
             ( (doc_verbose v $ PP.text "print_stack (stack_bottom, stack - 1);")
             $$ doc_switch d0 (d1 $$ d2)
             )
-
-
-rule2rid :: M.HashMap (NonTerminal, [Symbol]) RID
-rule2rid =
-    let f (r2id, id) n = foldl' (\ (m, i) r -> (M.insert (n, r) i m, i + 1)) (r2id, id) (rules n)
-    in  fst $ S.foldl' f (M.empty, 0) nonterminals
-
-
-get_rid :: (NonTerminal, [Symbol]) -> RID
-get_rid x = M.lookupDefault (error "missing RID for rule") x rule2rid
 
 
 ----------------------------------------------------------------------
@@ -250,14 +240,14 @@ doc_ifthen d1 d2 =
     PP.text "if " <> PP.parens d1
     $$ wrap_in_braces d2
 
-
+{-
 doc_ifthenelse :: Doc -> Doc -> Doc -> Doc
 doc_ifthenelse d1 d2 d3 =
     PP.text "if " <> PP.parens d1
     $$ wrap_in_braces d2
     $$ PP.text "else"
     $$ wrap_in_braces d3
-
+-}
 
 doc_while :: Doc -> Doc -> Doc
 doc_while d1 d2 =
@@ -270,7 +260,7 @@ doc_switch d1 d2 =
     PP.text "switch " <> (PP.parens d1)
     $$ (wrap_in_braces d2)
 
-
+{-
 doc_case :: Doc -> Doc -> Doc
 doc_case d1 d2 =
     PP.text "case " <> d1 <> PP.colon
@@ -281,7 +271,7 @@ doc_casebreak :: Doc -> Doc -> Doc
 doc_casebreak d1 d2 =
     PP.text "case " <> d1 <> PP.colon
     $$ PP.nest 4 (d2 $$ PP.text "break;")
-
+-}
 
 doc_multicase :: [Doc] -> Doc -> Doc
 doc_multicase ds d =

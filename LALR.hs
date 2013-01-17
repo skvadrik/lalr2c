@@ -27,7 +27,7 @@ symbol_to_first1 =
             _       -> False
         init_terminal m t = M.insert (T t) (S.singleton t) m
         init_nonterminal m n =
-            let rs  = rules n
+            let rs  = n2rules n
                 ts1 = (S.fromList . map ((\ (T t) -> t) . head) . filter terminal_headed) rs
                 ts2 = if elem [] rs then S.insert Tlambda ts1 else ts1
             in  M.insert (N n) ts2 m
@@ -40,7 +40,7 @@ symbol_to_first1 =
                     then f xs (S.union ys zs) ss
                     else S.union ys zs
         update xs n =
-            let rs = filter (not . terminal_headed) (rules n)
+            let rs = filter (not . terminal_headed) (n2rules n)
                 ys = foldl' (f xs) S.empty rs
             in  M.adjust (S.union ys) (N n) xs
         iterate xs =
@@ -51,9 +51,9 @@ symbol_to_first1 =
     in  iterate xs2
 
 
-lalr1_table :: LALRTable
+lalr1_table :: LALR1Table
 lalr1_table =
-    let sid2st_s2sid = lr1_to_lalr1 state_table
+    let sid2st_s2sid = lalr1_state_table
         sids         = M.keys sid2st_s2sid
         f tbl sid =
             let (st, s, s2sid) = M.lookupDefault (error "missing state in state table") sid sid2st_s2sid
@@ -75,7 +75,7 @@ raise_conflict t act1 act2 = error $ concat
     ]
 
 
-action_table :: State -> M.HashMap Symbol SID -> ActionTable
+action_table :: LALR1State -> M.HashMap Symbol SID -> ActionTable
 action_table state s2sid =
 -- проверь эту хрень с точки зрения логики. шифты особенно. не должны ли они быть уникальны по построению и т.д.
     let try_insert act t2act t = case (M.lookup t t2act, act) of
@@ -83,18 +83,20 @@ action_table state s2sid =
             (Just Error,          _                  ) -> M.insert t act t2act
             (Just (Shift i),      Shift j            ) | i == j -> t2act
             (Just (Shift i),      Shift j            ) | i /= j -> error "Shifting to different states"
-            (Just (Shift _),      Reduce _ _         ) -> trace' "shift/reduce" `seq` t2act
-            (Just (Reduce _ _),   Shift _            ) -> trace' "shift/reduce" `seq` M.insert t act t2act
-            (Just (Reduce _ ss1), act'@(Reduce _ ss2)) -> trace' "reduce/reduce" `seq` if length ss1 < length ss2 then M.insert t act' t2act else t2act
+            (Just (Shift _),      Reduce _           ) -> trace' "shift/reduce" `seq` t2act
+            (Just (Reduce _),     Shift _            ) -> trace' "shift/reduce" `seq` M.insert t act t2act
+            (Just (Reduce rid),   act'@(Reduce rid') ) -> trace' "reduce/reduce" `seq` if (length . rid2rule) rid < (length . rid2rule) rid'
+                then M.insert t act' t2act
+                else t2act
             (Just act',           _                  ) -> raise_conflict t act' act
-        f t2act cr ctx =
-            let v = case cr of
-                    (_, _, T t : _)                                -> case M.lookup (T t) s2sid of
+        f t2act cr@(rid, _) ctx =
+            let v = case core2rhs cr of
+                    _ | (cr, ctx) == lalr1_final_item -> Just (ctx, Accept)
+                    []                                -> Just (ctx, Reduce rid)
+                    T t : _                           -> case M.lookup (T t) s2sid of
                         Just sid -> Just (S.singleton t, Shift sid)
-                        Nothing  -> error $ "can't find goto for terminal " ++ show t
-                    (n, ls, [])     | n /= axiom                   -> Just (ctx, Reduce n ls)
-                    _               | (cr, ctx) == final_situation -> Just (ctx, Accept)
-                    _                                              -> Nothing
+                        Nothing  -> error "missing goto for terminal"
+                    _                                 -> Nothing
             in  case v of
                     Just (ts, act) -> S.foldl' (try_insert act) t2act ts
                     Nothing        -> t2act
@@ -109,129 +111,212 @@ goto_table s2sid =
     in  M.foldlWithKey' f M.empty s2sid
 
 
-lr1_to_lalr1 :: StateTable -> StateTable
-lr1_to_lalr1 sid2st_s_s2sid =
-    let unite (st1, sids1) (st2, sids2) =
-            let st    = M.foldlWithKey' (\ st cr ctx -> M.insertWith S.union cr ctx st) st1 st2
-                sids  = S.union sids1 sids2
-            in  (st, sids)
-        f1 cr2st_sids sid (st, _, _) =
-            let cr = (S.fromList . M.keys) st
-            in  M.insertWith unite cr (st, S.singleton sid) cr2st_sids
-        f2 sid2st_sid (st, sids) =
-            let min = S.findMin sids
-            in  S.foldl' (\ m i -> M.insertWith (error "state conflict while reducing to LALR") i (st, min) m) sid2st_sid sids
-        cr2st_sids = M.foldlWithKey' f1 M.empty sid2st_s_s2sid
-        sid2st_sid = M.foldl' f2 M.empty cr2st_sids
-        f3 sid2st_s_s2sid sid (_, s, s2sid) =
-            let lookup sid = M.lookupDefault (error $ "can't find SID for SID " ++ show sid) sid sid2st_sid
-                (st1, sid1) = lookup sid
-                s2sid1      = M.map (snd . lookup) s2sid
-            in  case M.lookup sid1 sid2st_s_s2sid of
-                    Nothing                -> M.insert sid1 (st1, s, s2sid1) sid2st_s_s2sid
-                    Just (st2, s2, s2sid2) -> if st1 == st2 && s == s2 && s2sid1 == s2sid2
-                        then sid2st_s_s2sid
-                        else error "states conflict"
-    in  M.foldlWithKey' f3 M.empty sid2st_s_s2sid
-
-
-state_table :: StateTable
-state_table =
-    let g (open, closed, result, max) st (sid, s) =
-            let (s2sid, open', closed', max') = goto_function open closed st max
-                result'              = M.insert sid (st, s, s2sid) result
-            in  (open', closed', result', max')
-        f (open, _,      result, _  ) | open == M.empty = result
-        f (open, closed, result, sid)                   = f $ M.foldlWithKey' g (M.empty, closed, result, sid) open
-        open   = M.insert init_state (1, N axiom) M.empty
-        closed = M.insert empty_state (0, T Tlambda) open
-        result = M.insert 0 (empty_state, T Tlambda, goto_empty) M.empty
-        max    = 2
-    in  f (open, closed, result, max)
-
-
-init_situation :: (Core, Context)
-init_situation =
-    let r   = case rules axiom of
-            [[ax']] -> [ax']
-            _       -> error "bad axiom rule in grammar"
+lalr1_final_item :: (Core, Context)
+lalr1_final_item =
+    let rid = case n2rids axiom of
+            [rid'] -> rid'
+            _      -> error "bad axiom rule in grammar"
         ctx = S.singleton (Tlambda)
-    in  ((axiom, [], r), ctx)
+    in  ((rid, 1), ctx)
 
 
-final_situation :: (Core, Context)
-final_situation =
-    let r   = case rules axiom of
-            [[ax']] -> [ax']
-            _       -> error "bad axiom rule in grammar"
-        ctx = S.singleton (Tlambda)
-    in  ((axiom, r, []), ctx)
+lalr1_state_table :: LALR1StateTable
+lalr1_state_table =
+    let sids         = M.keys lr0_state_table
+        (ss, s2sids) = ((\ (_, xs, ys) -> (xs, ys)) . unzip3 . M.elems) lr0_state_table
+    in  ( M.fromList
+        . zip sids
+        . (\ xs -> zip3 xs ss s2sids)
+        . M.elems
+        . M.map
+            ( lalr1_closing
+            . M.map fst
+            )
+        ) lookahead_table
 
 
-init_state :: State
-init_state =
-    let (cr, ctx) = init_situation
-        open = M.insert cr ctx M.empty
-    in  closing open
+propagate :: LookaheadTable -> LookaheadTable
+propagate m =
+    let f3 ctx m (sid, cr) = M.adjust (M.adjust (\ (ctx', v) -> (S.union ctx' ctx, v)) cr) sid m
+        f2 m (ctx, sidcrs) = S.foldl' (f3 ctx) m sidcrs
+        f1 m cr2ctx_sidcrs = M.foldl' f2 m cr2ctx_sidcrs
+        m' = M.foldl' f1 m m
+    in  if m' == m
+            then m
+            else propagate m'
 
 
-empty_state :: State
-empty_state = M.empty
+lookahead_table :: LookaheadTable
+lookahead_table =
+    let fold_context sid s2sid cr m cr'@(rid, pos) ctx = case core2rhs cr' of
+            []    -> m
+            s : _ ->
+                let sid' = M.lookupDefault (error "missing sid for symbol") s s2sid
+                    cr'' = (rid, pos + 1)
+
+                    set_propagate m =
+                        let update1 (v, propagates) = (v, S.insert (sid', cr'') propagates)
+                            update2 m = M.adjust update1 cr m
+                        in  M.adjust update2 sid m
+
+                    set_lookahead m t =
+                        let update1 (lookaheads, v) = (S.insert t lookaheads, v)
+                            update2 m = M.adjust update1 cr'' m
+                        in  M.adjust update2 sid' m
+
+                    dispatch m Tnew = set_propagate m
+                    dispatch m t    = set_lookahead m t
+
+                in  S.foldl' dispatch m ctx
+
+        fold_closing sid s2sid m cr st = M.foldlWithKey' (fold_context sid s2sid cr) m st
+
+        fold_kernel (m, cr2st) sid (st, _, s2sid) =
+            let st'               = lr0_kernel st
+                (cr2st', cr2st'') = S.foldl' update_closings (cr2st, M.empty) st'
+                m'                = M.foldlWithKey' (fold_closing sid s2sid) m cr2st''
+            in  (m', cr2st')
+
+        fold_table =
+            let init_table = M.foldlWithKey'
+                    (\ m sid (st, _, _) -> M.insert sid (S.foldl' (\ m cr -> M.insert cr (S.empty, S.empty) m) M.empty st) m
+                    ) M.empty lr0_state_table
+                init_table' = M.adjust (M.map (\ (lookahead, v) -> (S.insert Tlambda lookahead, v))) 1 init_table
+            in  M.foldlWithKey' fold_kernel (init_table', M.empty)
+
+    in  (propagate . fst . fold_table) lr0_state_table
 
 
-goto_empty :: M.HashMap Symbol SID
-goto_empty = S.foldl' (\ m s -> M.insert s 0 m) M.empty symbols
+update_closings :: (M.HashMap Core LALR1State, M.HashMap Core LALR1State) -> Core -> (M.HashMap Core LALR1State, M.HashMap Core LALR1State)
+update_closings (cr2st, cr2st') cr = case M.lookup cr cr2st of
+    Just st -> (cr2st, M.insert cr st cr2st')
+    Nothing ->
+        let st = lalr1_closing $ M.insert cr (S.singleton Tnew) M.empty
+        in  (M.insert cr st cr2st, M.insert cr st cr2st')
 
 
-goto_function :: M.HashMap State (SID, Symbol) -> M.HashMap State (SID, Symbol) -> State -> SID
-    -> (M.HashMap Symbol SID, M.HashMap State (SID, Symbol), M.HashMap State (SID, Symbol), SID)
-goto_function open closed st sid | st == M.empty = (goto_empty, open, closed, sid)
-goto_function open closed st sid =
-    let f (s2sid, open, closed, max) s =
-            let st' = closing $ shift st s
-            in  case M.lookup st' closed of
-                    Just (sid', s') | s' == s            -> (M.insert s sid' s2sid, open, closed, max)
-                    Just (sid', _)  | st' == empty_state -> (M.insert s sid' s2sid, open, closed, max) -- at start lambda leads to empty state
-                    Just (_,    _)                       -> error "transitions to the same state on multiple symbols"
-                    Nothing                              -> (M.insert s max s2sid, M.insert st' (max, s) open, M.insert st' (max, s) closed, max + 1)
-    in  S.foldl' f (M.empty, open, closed, sid) symbols
+lalr1_closing :: LALR1State -> LALR1State
+lalr1_closing open = lalr1_closing_ open M.empty
 
 
-shift :: State -> Symbol -> State
-shift st s =
-    let f xs (n, ls, rs) ctx = case (s, rs) of
-            (N n1, r@(N n2) : rs') | n1 == n2 -> M.insert (n, ls ++ [r], rs') ctx xs
-            (T t1, r@(T t2) : rs') | t1 == t2 -> M.insert (n, ls ++ [r], rs') ctx xs
-            _                                 -> xs
-    in  M.foldlWithKey' f M.empty st
-
-
-closing :: State -> State
-closing open = closing_ open M.empty
-
-
-closing_ :: State -> State -> State
-closing_ open closed | open == M.empty = closed
-closing_ open closed                   =
-    let close_state (open, closed) cr@(_, _, [])       ctx = (open, M.insertWith S.union cr ctx closed)
-        close_state (open, closed) cr@(_, _, T _ : _)  ctx = (open, M.insertWith S.union cr ctx closed)
-        close_state (open, closed) cr@(_, _, N n : ss) ctx =
-            let ctx' =
-                    let ctx1 = first1 ss
-                    in  if S.member Tlambda ctx1 then S.union ctx1 ctx else ctx1
-                f (xs, ys) r = case r of
-                    N _ : _ ->
-                        let xs' = case M.lookup (n, [], r) ys of
-                                Just ctx'' | S.isSubsetOf ctx' ctx'' -> xs
-                                _                                    -> M.insertWith S.union (n, [], r) ctx' xs
-                        in  (xs', ys)
-                    _       ->
-                        let ys' = M.insertWith S.union (n, [], r) ctx' ys
-                        in  (xs, ys')
-                closed' = M.insertWith S.union cr ctx closed
-            in  foldl' f (open, closed') (rules n)
+lalr1_closing_ :: LALR1State -> LALR1State -> LALR1State
+lalr1_closing_ open closed | open == M.empty = closed
+lalr1_closing_ open closed                   =
+    let close_state (open, closed) cr ctx = case core2rhs cr of
+            []       -> (open, M.insertWith S.union cr ctx closed)
+            T _ : _  -> (open, M.insertWith S.union cr ctx closed)
+            N n : ss ->
+                let ctx' =
+                        let ctx1 = first1 ss
+                        in  if S.member Tlambda ctx1 then S.union ctx1 ctx else ctx1
+                    f (open, closed) rid =
+                        let cr' = (rid, 0)
+                        in  case (rid2rule rid, M.lookup cr' closed) of
+                                (N _ : _, Just ctx'') | S.isSubsetOf ctx' ctx'' -> (open, closed)
+                                (N _ : _, _         )                           -> (M.insertWith S.union cr' ctx' open, closed)
+                                (_,       _         )                           -> (open, M.insertWith S.union cr' ctx' closed)
+                    closed' = M.insertWith S.union cr ctx closed
+                in  foldl' f (open, closed') (n2rids n)
         (open', closed') = M.foldlWithKey' close_state (M.empty, closed) open
-    in  closing_ open' closed'
+    in  lalr1_closing_ open' closed'
+
+
+lr0_kernel :: LR0State -> LR0State
+lr0_kernel st =
+    let is_kernel_item item = case item of
+             i | i == lr0_init_item -> True
+             (_, 0)                 -> False
+             _                      -> True
+    in  S.filter is_kernel_item st
+
+
+lr0_init_item :: Core
+lr0_init_item  = case n2rids axiom of
+    [rid] -> (rid, 0)
+    _     -> error "bad axiom rules in grammar"
+
+
+lr0_empty_state :: LR0State
+lr0_empty_state = S.empty
+
+
+lr0_state_table :: LR0StateTable
+lr0_state_table =
+    let init_state  = (lr0_closing . S.singleton) lr0_init_item
+        open        = M.insert init_state (1, N axiom) M.empty
+        closed      = M.insert lr0_empty_state (0, T Tlambda) open
+        result      = M.insert 0 (lr0_empty_state, T Tlambda, fgoto_empty) M.empty
+        max         = 2
+    in  lr0_state_table_ (open, closed, result, max)
+
+
+fgoto_empty :: M.HashMap Symbol SID
+fgoto_empty = S.foldl' (\ m s -> M.insert s 0 m) M.empty symbols
+
+
+lr0_state_table_ :: (M.HashMap LR0State (SID, Symbol), M.HashMap LR0State (SID, Symbol), LR0StateTable, SID) -> LR0StateTable
+lr0_state_table_ (open, _,      result, _  ) | open == M.empty = result
+lr0_state_table_ (open, closed, result, max) =
+    let fgoto (open, closed, result, max) st (sid, s) | st == S.empty =
+            let result' = M.insert sid (st, s, fgoto_empty) result
+            in  (open, closed, result', max)
+        fgoto (open, closed, result, max) st (sid, s) =
+            let f (s2sid, open, closed, max) s =
+                    let st' = lr0_closing $ lr0_shift st s
+                    in  case M.lookup st' closed of
+                            Just (sid', s') | s' == s || st' == lr0_empty_state ->
+                                ( M.insert s sid' s2sid
+                                , open
+                                , closed
+                                , max
+                                ) -- at start lambda leads to empty state
+                            Nothing ->
+                                ( M.insert s max s2sid
+                                , M.insert st' (max, s) open
+                                , M.insert st' (max, s) closed
+                                , max + 1
+                                )
+                            _ -> error "transitions to the same state on multiple symbols"
+                (s2sid, open', closed', max') = S.foldl' f (M.empty, open, closed, max) symbols
+                result'                       = M.insert sid (st, s, s2sid) result
+            in  (open', closed', result', max')
+    in  lr0_state_table_ $ M.foldlWithKey' fgoto (M.empty, closed, result, max) open
+
+
+lr0_shift :: LR0State -> Symbol -> LR0State
+lr0_shift st s =
+    let f xs cr@(rid, pos) = case (s, core2rhs cr) of
+            (N n1, N n2 : _) | n1 == n2 -> S.insert (rid, pos + 1) xs
+            (T t1, T t2 : _) | t1 == t2 -> S.insert (rid, pos + 1) xs
+            _                           -> xs
+    in  S.foldl' f S.empty st
+
+
+lr0_closing :: LR0State -> LR0State
+lr0_closing open = lr0_closing_ open S.empty
+
+
+lr0_closing_ :: LR0State -> LR0State -> LR0State
+lr0_closing_ open closed | open == S.empty = closed
+lr0_closing_ open closed                   =
+    let close_state (open, closed) cr = case core2rhs cr of
+            []      -> (open, S.insert cr closed)
+            T _ : _ -> (open, S.insert cr closed)
+            N n : _ ->
+                let f (open, closed) rid =
+                        let cr' = (rid, 0)
+                        in  case (rid2rule rid, S.member cr' closed) of
+                                (_,       True ) -> (open, closed)
+                                (N _ : _, False) -> (S.insert cr' open, closed)
+                                (_,       False) -> (open, S.insert cr' closed)
+                    closed' = S.insert cr closed
+                in  foldl' f (open, closed') (n2rids n)
+        (open', closed') = S.foldl' close_state (S.empty, closed) open
+    in  lr0_closing_ open' closed'
+
+
+core2rhs :: Core -> [Symbol]
+core2rhs (rid, pos) = (drop pos . rid2rule) rid
 
 
 

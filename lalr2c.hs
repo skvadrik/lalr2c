@@ -1,4 +1,3 @@
-import           Control.Monad            (mapM_)
 import           Data.List                (foldl')
 import qualified Data.HashMap.Strict as M
 import           System.Environment       (getArgs)
@@ -35,18 +34,9 @@ main = do
     when (unknown_opts /= []) $
         error $ "unknown cmd-options: " ++ unwords unknown_opts
 
-    let tbl  = lalr1_table
-    codegen tbl v fdest fhdr
-{-
-    mapM_
-        (\ (st, (s, action_tbl, goto_tbl)) -> do
-            print $ "state:::: " ++ show st
-            print $ "ACTION:::: "
-            mapM_ print (M.toList action_tbl)
-            mapM_ print (M.toList goto_tbl)
-        ) (M.toList tbl)
--}
-    print $ M.size tbl
+    codegen lalr1_table v fdest fhdr
+
+    print $ M.size lalr1_table
 
 
 

@@ -16,12 +16,19 @@ import           Text.PrettyPrint                    ((<>), ($$), Doc)
 import           Debug.Trace
 
 
-data Grammar = Grammar (S.Set Terminal) (S.Set NonTerminal) (M.HashMap NonTerminal (S.Set [Symbol])) NonTerminal deriving (Show)
-data Terminal
-    = TName   String
-    | TString String
+data Grammar
+    = Grammar
+        (S.Set Terminal)
+        (S.Set NonTerminal)
+        [(Int, NonTerminal, [Symbol])]
+        NonTerminal
+    deriving (Show)
+newtype Terminal
+    = Terminal String
     deriving (Show, Ord, Eq)
-newtype NonTerminal = NonTerminal String deriving (Show, Ord, Eq)
+newtype NonTerminal
+    = NonTerminal String
+    deriving (Show, Ord, Eq)
 data Symbol
     = STerminal    Terminal
     | SNonTerminal NonTerminal
@@ -46,7 +53,7 @@ parse_terminals :: GenParser Char st (S.Set Terminal)
 parse_terminals = do
     tss <- many1 $ do
         try $ spaces >> string "%token"
-        ts <- many1 $ try $ spaces1 >> TName <$> parse_name
+        ts <- many1 $ try $ spaces1 >> Terminal <$> parse_name
         return $ S.fromList ts
     return $ S.unions tss
 
@@ -60,13 +67,11 @@ parse_axiom = do
 
 
 parse_symbol :: S.Set Terminal -> GenParser Char st Symbol
-parse_symbol ts =
-    try $ do
-        s <- parse_name
-        return $ if S.member (TName s) ts
-            then (STerminal . TName) s
-            else (SNonTerminal . NonTerminal) s
-    <|> between (char '\'') (char '\'') ((STerminal . TString) <$> many1 (noneOf "'"))
+parse_symbol ts = do
+    s <- parse_name
+    return $ if S.member (Terminal s) ts
+        then (STerminal . Terminal) s
+        else (SNonTerminal . NonTerminal) s
 
 
 parse_rules :: S.Set Terminal -> GenParser Char st [(NonTerminal, S.Set [Symbol])]
@@ -95,16 +100,22 @@ eol = skipMany1 $ char '\n'
 to_grammar :: S.Set Terminal -> [(NonTerminal, S.Set [Symbol])] -> NonTerminal -> Grammar
 to_grammar ts rs ax =
     let ns = (S.fromList . fst . unzip) rs
-        insert_rule (ts, n2r) (n, r) =
-            let check_symbol ts (SNonTerminal n)          = if S.member n ns then ts else error $ "unknown nonterminal: " ++ show n
-                check_symbol ts (STerminal t@(TString _)) = S.insert t ts
-                check_symbol ts _                         = ts
-                ts'  = S.foldl' (\ ts1 ss -> foldl' check_symbol ts1 ss) ts r
-                n2r' = M.insertWith (error $ "double rule for " ++ show n) n r n2r
-            in  (ts', n2r')
-        (ts', rs') = foldl' insert_rule (ts, M.empty) rs
-        ts''       = S.insert (TName "lambda") ts'
-    in  Grammar ts'' ns rs' ax
+
+        add_rules (rs, max) (n, r) =
+            let check_symbol :: Symbol -> Symbol
+                check_symbol s = case s of
+                    SNonTerminal n -> if S.member n ns
+                        then s
+                        else error $ "unknown nonterminal: " ++ show n
+                    STerminal    _ -> s
+
+                add_rule (rs, max) ss = ((max, n, ss) : rs, max + 1)
+
+            in  (S.foldl' add_rule (rs, max) . S.map (map check_symbol)) r
+
+        rs' = fst $ foldl' add_rules ([], 1) rs
+        ts' = (S.insert (Terminal "lambda") . S.insert (Terminal "new")) ts
+    in  Grammar ts' ns rs' ax
 
 
 complement :: Grammar -> Grammar
@@ -114,42 +125,12 @@ complement (Grammar ts ns rs ax@(NonTerminal s)) =
             s'                         -> f s'
         ax' = NonTerminal (f s)
         ns' = S.insert ax' ns
-        rs' = M.insert ax' (S.singleton [SNonTerminal ax]) rs
+        rs' = (0, ax', [SNonTerminal ax]) : rs
     in  Grammar ts ns' rs' ax'
 
 
 terminal2name :: Terminal -> Doc
-terminal2name (TName t)   = PP.text "T" <> PP.text t
-terminal2name (TString t) =
-    let f c = case c of
-            _ | isAlphaNum c || c == '_' -> [c]
-            '+'                          -> "Plus"
-            '-'                          -> "Minus"
-            '*'                          -> "Star"
-            '/'                          -> "Slash"
-            '\\'                         -> "Backslash"
-            '|'                          -> "Vslash"
-            '<'                          -> "OAngle"
-            '>'                          -> "CAngle"
-            '.'                          -> "Dot"
-            ','                          -> "Comma"
-            ';'                          -> "Semi"
-            ':'                          -> "Colon"
-            '?'                          -> "Question"
-            '!'                          -> "Exclamation"
-            '~'                          -> "Tilde"
-            '('                          -> "OBrace"
-            ')'                          -> "CBrace"
-            '{'                          -> "OParens"
-            '}'                          -> "CParens"
-            '['                          -> "OBracket"
-            ']'                          -> "CBracket"
-            '='                          -> "Eq"
-            '^'                          -> "Hat"
-            '&'                          -> "Amp"
-            '%'                          -> "Percent"
-            c                            -> error $ "unknown symbol in terminal: " ++ [c]
-    in  PP.text $ "T" ++ concatMap f t
+terminal2name (Terminal t) = PP.text "T" <> PP.text t
 
 
 nonterminal2name :: NonTerminal -> Doc
@@ -161,26 +142,81 @@ symbol2name (STerminal t)    = PP.text "T " <> terminal2name t
 symbol2name (SNonTerminal n) = PP.text "N " <> nonterminal2name n
 
 
-doc_rules :: M.HashMap NonTerminal (S.Set [Symbol]) -> Doc
+doc_rhs :: [Symbol] -> Doc
+doc_rhs =
+    ( PP.brackets
+    . PP.hcat
+    . PP.punctuate (PP.text ", ")
+    . map symbol2name
+    )
+
+
+doc_rules :: [(Int, NonTerminal, [Symbol])] -> Doc
 doc_rules rs =
-    let doc_alts =
+    let doc_one (i, n, ss) = PP.parens
+            ( PP.int i
+            <> PP.text ", "
+            <> nonterminal2name n
+            <> PP.text ", "
+            <> doc_rhs ss
+            )
+        rules = 
             ( PP.brackets
             . PP.vcat
-            . PP.punctuate (PP.text ",")
-            . map
-                (\ cs ->
-                    ( PP.brackets
-                    . PP.hcat
-                    . PP.punctuate (PP.text ", ")
-                    . map symbol2name
-                    ) cs
-                )
-            . S.toList
+            . PP.punctuate (PP.char ',')
+            . map doc_one
+            ) rs
+    in  PP.text "rules :: [(RID, NonTerminal, [Symbol])]"
+        $$ PP.text "rules ="
+        $$ PP.nest 4 rules
+
+
+doc_rid2rule :: [(Int, NonTerminal, [Symbol])] -> Doc
+doc_rid2rule rs =
+    let doc_one (i, _, ss) =
+            PP.text "rid2rule "
+            <> PP.int i
+            <> PP.text " = "
+            <> doc_rhs ss
+    in  PP.text "rid2rule :: RID -> [Symbol]"
+        $$ (PP.vcat . map doc_one) rs
+        $$ PP.text "rid2rule _ = error \"RID exceeding maximum possible value\""
+
+
+doc_n2rules :: [(Int, NonTerminal, [Symbol])] -> Doc
+doc_n2rules rs =
+    let n2rules = foldl' (\ n2rs (_, n, ss) -> M.insertWith (++) n [ss] n2rs) M.empty rs
+        doc_alts =
+            ( PP.brackets
+            . PP.vcat
+            . PP.punctuate (PP.char ',')
+            . map doc_rhs
             )
-        doc_r (n, alts) = PP.text "rules " <> nonterminal2name n <> PP.text " = " <> doc_alts alts
-        d1 = PP.text "rules :: Rule"
-        d2 = (PP.vcat . map doc_r . M.toList) rs
-    in  d1 $$ d2
+        doc_one d n alts = d
+            $$ PP.text "n2rules "
+            <> nonterminal2name n
+            <> PP.text " = "
+            <> doc_alts alts
+    in  PP.text "n2rules :: NonTerminal -> [[Symbol]]"
+        $$ M.foldlWithKey' doc_one PP.empty n2rules
+
+
+doc_n2rids :: [(Int, NonTerminal, [Symbol])] -> Doc
+doc_n2rids rs =
+    let n2rids = foldl' (\ n2rs (i, n, _) -> M.insertWith (++) n [i] n2rs) M.empty rs
+        doc_alts =
+            ( PP.brackets
+            . PP.hcat
+            . PP.punctuate (PP.char ',')
+            . map PP.int
+            )
+        doc_one d n alts = d
+            $$ PP.text "n2rids "
+            <> nonterminal2name n
+            <> PP.text " = "
+            <> doc_alts alts
+    in  PP.text "n2rids :: NonTerminal -> [RID]"
+        $$ M.foldlWithKey' doc_one PP.empty n2rids
 
 
 doc_axiom :: NonTerminal -> Doc
@@ -207,43 +243,30 @@ doc_symbols =
 
 doc_instances :: S.Set Terminal -> S.Set NonTerminal -> Doc
 doc_instances ts ns =
-    let doc_hash_ts =
+    let doc_hash f =
             ( PP.vcat
-            . map (\ (t, k) -> PP.text "hash " <> terminal2name t <> PP.text " = " <> PP.int k)
-            . (\ ts -> zip ts [1 .. length ts])
+            . map (\ (x, k) -> PP.text "hash " <> f x <> PP.text " = " <> PP.int k)
+            . (\ xs -> zip xs [1 .. length xs])
             . S.toList
-            ) ts
-        doc_hash_ns =
-            ( PP.vcat
-            . map (\ (n, k) -> PP.text "hash " <> nonterminal2name n <> PP.text " = " <> PP.int k)
-            . (\ ns -> zip ns [1 .. length ns])
-            . S.toList
-            ) ns
-        doc_hash_ss =
+            )
+        doc_hash_symbols =
             PP.text "hash (T t) = 2 * hash t"
             $$ PP.text "hash (N n) = 2 * hash n + 1"
-        doc_rnf_ts =
+        doc_rnf f =
             ( PP.vcat
-            . map (\ (t, k) -> PP.text "rnf " <> terminal2name t <> PP.text " = rnf (" <> PP.int k <> PP.text " :: Int)")
-            . (\ ts -> zip ts [1 .. length ts])
+            . map (\ (x, k) -> PP.text "rnf " <> f x <> PP.text " = rnf (" <> PP.int k <> PP.text " :: Int)")
+            . (\ xs -> zip xs [1 .. length xs])
             . S.toList
-            ) ts
-        doc_rnf_ns =
-            ( PP.vcat
-            . map (\ (n, k) -> PP.text "rnf " <> nonterminal2name n <> PP.text " = rnf (" <> PP.int k <> PP.text " :: Int)")
-            . (\ ns -> zip ns [1 .. length ns])
-            . S.toList
-            ) ns
-        doc_rnf_ss =
+            )
+        doc_rnf_symbols =
             PP.text "rnf (T t) = rnf t"
             $$ PP.text "rnf (N n) = rnf n"
-        d1 = PP.text "instance Hashable Terminal where"    $$ PP.nest 4 doc_hash_ts
-        d2 = PP.text "instance Hashable NonTerminal where" $$ PP.nest 4 doc_hash_ns
-        d3 = PP.text "instance Hashable Symbol where"      $$ PP.nest 4 doc_hash_ss
-        d4 = PP.text "instance NFData Terminal where"    $$ PP.nest 4 doc_rnf_ts
-        d5 = PP.text "instance NFData NonTerminal where" $$ PP.nest 4 doc_rnf_ns
-        d6 = PP.text "instance NFData Symbol where"      $$ PP.nest 4 doc_rnf_ss
-    in  d1 $$$ d2 $$$ d3 $$$ d4 $$$ d5 $$$ d6
+    in  PP.text "instance Hashable Terminal where"        $$ PP.nest 4 (doc_hash terminal2name ts)
+        $$$ PP.text "instance Hashable NonTerminal where" $$ PP.nest 4 (doc_hash nonterminal2name ns)
+        $$$ PP.text "instance Hashable Symbol where"      $$ PP.nest 4 doc_hash_symbols
+        $$$ PP.text "instance NFData Terminal where"      $$ PP.nest 4 (doc_rnf terminal2name ts)
+        $$$ PP.text "instance NFData NonTerminal where"   $$ PP.nest 4 (doc_rnf nonterminal2name ns)
+        $$$ PP.text "instance NFData Symbol where"        $$ PP.nest 4 doc_rnf_symbols
 
 
 ($$$) :: Doc -> Doc -> Doc
@@ -257,22 +280,24 @@ gen_code :: Grammar -> String
 gen_code (Grammar ts ns rs a) =
     let doc_ts = (PP.hcat . PP.punctuate (PP.text " | ") . map terminal2name . S.toList) ts
         doc_ns = (PP.hcat . PP.punctuate (PP.text " | ") . map nonterminal2name . S.toList) ns
-        d0 = PP.text "module Grammar where"
+    in  PP.render $
+            PP.text "module Grammar where"
             $$$ PP.text "import qualified Data.Set      as S"
             $$ PP.text "import           Data.Hashable"
             $$ PP.text "import           Control.DeepSeq"
-        d1 = PP.text "data Terminal    = " <> doc_ts <> PP.text " deriving (Show, Eq, Ord)"
-        d2 = PP.text "data NonTerminal = " <> doc_ns <> PP.text " deriving (Show, Eq, Ord)"
-        d3 = PP.text "data Symbol      = T Terminal | N NonTerminal deriving (Show, Eq, Ord)"
-        d4 = PP.text "type Rule        = NonTerminal -> [[Symbol]]"
-        d5 = doc_terminals ts
-        d6 = doc_nonterminals ns
-        d7 = doc_symbols
-        d8 = doc_rules rs
-        d9 = doc_axiom a
-        d10 = doc_instances ts ns
-        doc = d0 $$$ d1 $$ d2 $$ d3 $$ d4 $$$ d5 $$$ d6 $$$ d7 $$$ d8 $$$ d9 $$$ d10
-    in  PP.render doc
+            $$$ PP.text "type RID         = Int"
+            $$ PP.text "data Terminal    = " <> doc_ts <> PP.text " deriving (Show, Eq, Ord)"
+            $$ PP.text "data NonTerminal = " <> doc_ns <> PP.text " deriving (Show, Eq, Ord)"
+            $$ PP.text "data Symbol      = T Terminal | N NonTerminal deriving (Show, Eq, Ord)"
+            $$$ doc_terminals ts
+            $$$ doc_nonterminals ns
+            $$$ doc_symbols
+            $$$ doc_rules rs
+            $$$ doc_rid2rule rs
+            $$$ doc_n2rules rs
+            $$$ doc_n2rids rs
+            $$$ doc_axiom a
+            $$$ doc_instances ts ns
 
 
 main :: IO ()
@@ -283,7 +308,6 @@ main = do
 
     parseFromFile parse_grammar fg >>= \ g -> case g of
         Left e   -> print e
---        Right xs  -> print g
         Right g' -> writeFile fhs $ (gen_code . complement) g'
 
 
