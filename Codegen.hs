@@ -117,8 +117,7 @@ doc_parse tbl v =
         ( doc_init_stack
         $$$ doc_goto (PP.text "state_" <> PP.int 1)
         $$$ M.foldlWithKey' (\ doc sid (s, actions, gotos) -> doc $$$ (doc_state v) sid s actions gotos) PP.empty tbl
-        $$$ foldl' (\ doc (rid, n, r) -> doc $$$ (doc_rule v) rid n r) PP.empty rules
-        $$$ S.foldl' (\ doc n -> doc $$$ doc_nonterminal v tbl n) PP.empty nonterminals
+        $$$ foldl' (\ doc (rid, n, r) -> doc $$$ (doc_rule v tbl) rid n r) PP.empty rules
         )
 
 
@@ -177,14 +176,14 @@ doc_state v sid s t2act _ =
             )
 
 
-doc_rule :: Verbosity -> RID -> NonTerminal -> [Symbol] -> Doc
-doc_rule v rid n ss =
+doc_rule :: Verbosity -> LALR1Table -> RID -> NonTerminal -> [Symbol] -> Doc
+doc_rule v tbl rid n ss =
     PP.text "reduce_" <> PP.int rid <> PP.colon
     $$ PP.nest 4
         ( PP.text "stack -= " <> PP.int (length ss) <> PP.semi
         $$ (doc_verbose v $ PP.text "printf (\"" <> PP.text (show n) <> PP.text " ----> " <> PP.text (concatMap show ss) <> PP.text "\\n\");")
         $$ (doc_verbose v $ PP.text "printf (\"popped " <> PP.int (length ss) <> PP.text " symbols\\n\");")
-        $$ doc_goto (PP.text ("nonterminal_" ++ show n))
+        $$ doc_nonterminal v tbl n
         )
 
 
@@ -201,8 +200,7 @@ doc_nonterminal v tbl n =
             in  doc_multicasebreak d $ doc_goto (PP.text "state_" <> PP.int sid)
         d1 = M.foldlWithKey' (\ doc sid sids -> doc $$ f2 sid sids) PP.empty sid2sids
         d2 = doc_default $ doc_goto (PP.text "state_0")
-    in  PP.text ("nonterminal_" ++ show n) <> PP.colon
-        $$ PP.nest 4
+    in  PP.nest 4
             ( (doc_verbose v $ PP.text "print_stack (stack_bottom, stack - 1);")
             $$ doc_switch d0 (d1 $$ d2)
             )
