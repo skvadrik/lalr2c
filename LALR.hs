@@ -76,12 +76,12 @@ raise_conflict t act1 act2 = error $ concat
     ]
 
 
-show_shift_reduce :: RID -> RID -> String
-show_shift_reduce i j = printf "shift/reduce:  (%d) %s vs (%d) %s" i ((show . rid2rule) i) j ((show . rid2rule) j)
+report_sr_conflict :: RID -> RID -> String
+report_sr_conflict i j = trace' $ printf "shift/reduce:  state %d vs (%d) %s" i j ((show . rid2rule) j)
 
 
-show_reduce_reduce :: RID -> RID -> String
-show_reduce_reduce i j = printf "reduce/reduce: (%d) %s vs (%d) %s" i ((show . rid2rule) i) j ((show . rid2rule) j)
+report_rr_conflict :: RID -> RID -> String
+report_rr_conflict i j = trace' $ printf "reduce/reduce: (%d) %s vs (%d) %s" i ((show . rid2rule) i) j ((show . rid2rule) j)
 
 
 action_table :: LALR1State -> M.HashMap Symbol SID -> ActionTable
@@ -92,13 +92,13 @@ action_table state s2sid =
             (Just Error,      _              ) -> M.insert t act t2act
             (Just (Shift i),  Shift j        ) | i == j -> t2act
             (Just (Shift i),  Shift j        ) | i /= j -> error "Shifting to different states"
-            (Just (Shift i),  Reduce j       ) -> trace' (show_shift_reduce  i j) `seq` t2act
-            (Just (Reduce i), Shift j        ) -> trace' (show_shift_reduce  j i) `seq` M.insert t act t2act
-            (Just (Reduce i), act'@(Reduce j)) -> trace' (show_reduce_reduce i j) `seq`
+            (Just (Shift i),  Reduce j       ) -> report_sr_conflict i j `seq` t2act
+            (Just (Reduce i), Shift j        ) -> report_sr_conflict j i `seq` M.insert t act t2act
+            (Just (Reduce i), act'@(Reduce j)) -> report_rr_conflict i j `seq`
                 if (length . rid2rule) i < (length . rid2rule) j
                     then M.insert t act' t2act
                     else t2act
-            (Just act',           _                  ) -> raise_conflict t act' act
+            (Just act',           _          ) -> raise_conflict t act' act
         f t2act cr@(rid, _) ctx =
             let v = case core2rhs cr of
                     _ | (cr, ctx) == lalr1_final_item -> Just (ctx, Accept)
