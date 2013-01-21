@@ -12,7 +12,6 @@ import           Text.ParserCombinators.Parsec
 import qualified Text.PrettyPrint              as PP
 import           Text.PrettyPrint                    ((<>), ($$), Doc)
 
-
 import           Debug.Trace
 
 
@@ -20,7 +19,7 @@ data Grammar
     = Grammar
         (S.Set Terminal)
         (S.Set NonTerminal)
-        [(Int, NonTerminal, [Symbol])]
+        [(Int, NonTerminal, [Symbol], Code)]
         NonTerminal
     deriving (Show)
 newtype Terminal
@@ -33,10 +32,20 @@ data Symbol
     = STerminal    Terminal
     | SNonTerminal NonTerminal
     deriving (Show, Ord, Eq)
+type Code = String
+
+
+instance Hashable Terminal where
+    hash (Terminal t) = hash t
 
 
 instance Hashable NonTerminal where
     hash (NonTerminal n) = hash n
+
+
+instance Hashable Symbol where
+    hash (STerminal t)    = 2 * hash t
+    hash (SNonTerminal n) = 2 * hash n + 1
 
 
 parse_grammar :: GenParser Char st Grammar
@@ -74,15 +83,35 @@ parse_symbol ts = do
         else (SNonTerminal . NonTerminal) s
 
 
-parse_rules :: S.Set Terminal -> GenParser Char st [(NonTerminal, S.Set [Symbol])]
+parse_code :: GenParser Char st Code
+parse_code = do
+    char '{'
+    code1 <- many (noneOf "{}")
+    code2 <- parse_code <|> return ""
+    code3 <- many (noneOf "{}")
+    char '}'
+    return $ code1 ++ code2 ++ code3
+
+
+
+parse_rules :: S.Set Terminal -> GenParser Char st [(NonTerminal, M.HashMap [Symbol] Code)]
 parse_rules ts =
     many1 $ do
         spaces
         n  <- NonTerminal <$> parse_name
         spaces >> char ':' >> spaces
-        xs <- sepBy1 (spaces >> many1 (parse_symbol ts >>= \ s -> spaces >> return s)) (char '|')
+        xs <- sepBy1
+            ( do
+                spaces
+                ss <- many1 (parse_symbol ts >>= \ s -> spaces >> return s)
+                spaces
+                c  <- parse_code <|> return ""
+                spaces
+                return (ss, c)
+            ) (char '|')
         spaces >> char ';' >> spaces
-        return (n, S.fromList xs)
+        let m = foldl' (\ m (ss, c) -> M.insertWith (error "duplicate rule") ss c m) M.empty xs
+        return (n, m)
 
 
 parse_name :: GenParser Char st String
@@ -97,21 +126,22 @@ eol :: GenParser Char st ()
 eol = skipMany1 $ char '\n'
 
 
-to_grammar :: S.Set Terminal -> [(NonTerminal, S.Set [Symbol])] -> NonTerminal -> Grammar
+to_grammar :: S.Set Terminal -> [(NonTerminal, M.HashMap [Symbol] Code)] -> NonTerminal -> Grammar
 to_grammar ts rs ax =
     let ns = (S.fromList . fst . unzip) rs
 
         add_rules (rs, max) (n, r) =
-            let check_symbol :: Symbol -> Symbol
-                check_symbol s = case s of
+            let check_symbol s = case s of
                     SNonTerminal n -> if S.member n ns
                         then s
                         else error $ "unknown nonterminal: " ++ show n
                     STerminal    _ -> s
 
-                add_rule (rs, max) ss = ((max, n, ss) : rs, max + 1)
+                add_rule (rs, max) ss c = ((max, n, ss, c) : rs, max + 1)
 
-            in  (S.foldl' add_rule (rs, max) . S.map (map check_symbol)) r
+            in  ( M.foldlWithKey' add_rule (rs, max)
+                . M.foldlWithKey' (\ m ss c -> M.insert (map check_symbol ss) c m) M.empty
+                ) r
 
         rs' = fst $ foldl' add_rules ([], 1) rs
         ts' = (S.insert (Terminal "lambda") . S.insert (Terminal "new")) ts
@@ -125,7 +155,7 @@ complement (Grammar ts ns rs ax@(NonTerminal s)) =
             s'                         -> f s'
         ax' = NonTerminal (f s)
         ns' = S.insert ax' ns
-        rs' = (0, ax', [SNonTerminal ax]) : rs
+        rs' = (0, ax', [SNonTerminal ax], " $1 ") : rs
     in  Grammar ts ns' rs' ax'
 
 
@@ -151,29 +181,31 @@ doc_rhs =
     )
 
 
-doc_rules :: [(Int, NonTerminal, [Symbol])] -> Doc
+doc_rules :: [(Int, NonTerminal, [Symbol], Code)] -> Doc
 doc_rules rs =
-    let doc_one (i, n, ss) = PP.parens
+    let doc_one (i, n, ss, c) = PP.parens
             ( PP.int i
             <> PP.text ", "
             <> nonterminal2name n
             <> PP.text ", "
             <> doc_rhs ss
+            <> PP.text ", "
+            <> (PP.doubleQuotes . PP.braces . PP.text) c
             )
-        rules = 
+        rules =
             ( PP.brackets
             . PP.vcat
             . PP.punctuate (PP.char ',')
             . map doc_one
             ) rs
-    in  PP.text "rules :: [(RID, NonTerminal, [Symbol])]"
+    in  PP.text "rules :: [(RID, NonTerminal, [Symbol], Code)]"
         $$ PP.text "rules ="
         $$ PP.nest 4 rules
 
 
-doc_rid2rule :: [(Int, NonTerminal, [Symbol])] -> Doc
+doc_rid2rule :: [(Int, NonTerminal, [Symbol], Code)] -> Doc
 doc_rid2rule rs =
-    let doc_one (i, _, ss) =
+    let doc_one (i, _, ss, _) =
             PP.text "rid2rule "
             <> PP.int i
             <> PP.text " = "
@@ -183,9 +215,9 @@ doc_rid2rule rs =
         $$ PP.text "rid2rule rid = error $ \"RID exceeding maximum possible value: \" ++ show rid"
 
 
-doc_n2rules :: [(Int, NonTerminal, [Symbol])] -> Doc
+doc_n2rules :: [(Int, NonTerminal, [Symbol], Code)] -> Doc
 doc_n2rules rs =
-    let n2rules = foldl' (\ n2rs (_, n, ss) -> M.insertWith (++) n [ss] n2rs) M.empty rs
+    let n2rules = foldl' (\ n2rs (_, n, ss, _) -> M.insertWith (++) n [ss] n2rs) M.empty rs
         doc_alts =
             ( PP.brackets
             . PP.vcat
@@ -201,9 +233,9 @@ doc_n2rules rs =
         $$ M.foldlWithKey' doc_one PP.empty n2rules
 
 
-doc_n2rids :: [(Int, NonTerminal, [Symbol])] -> Doc
+doc_n2rids :: [(Int, NonTerminal, [Symbol], Code)] -> Doc
 doc_n2rids rs =
-    let n2rids = foldl' (\ n2rs (i, n, _) -> M.insertWith (++) n [i] n2rs) M.empty rs
+    let n2rids = foldl' (\ n2rs (i, n, _, _) -> M.insertWith (++) n [i] n2rs) M.empty rs
         doc_alts =
             ( PP.brackets
             . PP.hcat
@@ -286,6 +318,7 @@ gen_code (Grammar ts ns rs a) =
             $$ PP.text "import           Data.Hashable"
             $$ PP.text "import           Control.DeepSeq"
             $$$ PP.text "type RID         = Int"
+            $$$ PP.text "type Code        = String"
             $$ PP.text "data Terminal    = " <> doc_ts <> PP.text " deriving (Show, Eq, Ord)"
             $$ PP.text "data NonTerminal = " <> doc_ns <> PP.text " deriving (Show, Eq, Ord)"
             $$ PP.text "data Symbol      = T Terminal | N NonTerminal deriving (Show, Eq, Ord)"
