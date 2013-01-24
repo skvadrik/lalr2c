@@ -155,7 +155,7 @@ complement (Grammar ts ns rs ax@(NonTerminal s)) =
             s'                         -> f s'
         ax' = NonTerminal (f s)
         ns' = S.insert ax' ns
-        rs' = (0, ax', [SNonTerminal ax], " $1 ") : rs
+        rs' = (0, ax', [SNonTerminal ax], "") : rs
     in  Grammar ts ns' rs' ax'
 
 
