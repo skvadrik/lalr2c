@@ -1,5 +1,6 @@
 #!/usr/bin/env runghc
 
+{-# LANGUAGE DeriveGeneric #-}
 
 import           Control.Applicative                 ((<$>))
 import           Data.Hashable
@@ -8,6 +9,7 @@ import qualified Data.HashMap.Strict           as M
 import qualified Data.Set                      as S
 import           Data.List                           (foldl')
 import           Data.Char                           (isAlphaNum)
+import           GHC.Generics                        (Generic)
 import           Text.ParserCombinators.Parsec
 import qualified Text.PrettyPrint              as PP
 import           Text.PrettyPrint                    ((<>), ($$), Doc)
@@ -24,28 +26,22 @@ data Grammar
     deriving (Show)
 newtype Terminal
     = Terminal String
-    deriving (Show, Ord, Eq)
+    deriving (Show, Ord, Eq, Generic)
 newtype NonTerminal
     = NonTerminal String
-    deriving (Show, Ord, Eq)
+    deriving (Show, Ord, Eq, Generic)
 data Symbol
     = STerminal    Terminal
     | SNonTerminal NonTerminal
-    deriving (Show, Ord, Eq)
+    deriving (Show, Ord, Eq, Generic)
 type Code = String
 
 
-instance Hashable Terminal where
-    hash (Terminal t) = hash t
+instance Hashable Terminal
 
+instance Hashable NonTerminal
 
-instance Hashable NonTerminal where
-    hash (NonTerminal n) = hash n
-
-
-instance Hashable Symbol where
-    hash (STerminal t)    = 2 * hash t
-    hash (SNonTerminal n) = 2 * hash n + 1
+instance Hashable Symbol
 
 
 parse_grammar :: GenParser Char st Grammar
@@ -275,16 +271,7 @@ doc_symbols =
 
 doc_instances :: S.Set Terminal -> S.Set NonTerminal -> Doc
 doc_instances ts ns =
-    let doc_hash f =
-            ( PP.vcat
-            . map (\ (x, k) -> PP.text "hash " <> f x <> PP.text " = " <> PP.int k)
-            . (\ xs -> zip xs [1 .. length xs])
-            . S.toList
-            )
-        doc_hash_symbols =
-            PP.text "hash (T t) = 2 * hash t"
-            $$ PP.text "hash (N n) = 2 * hash n + 1"
-        doc_rnf f =
+    let doc_rnf f =
             ( PP.vcat
             . map (\ (x, k) -> PP.text "rnf " <> f x <> PP.text " = rnf (" <> PP.int k <> PP.text " :: Int)")
             . (\ xs -> zip xs [1 .. length xs])
@@ -293,9 +280,9 @@ doc_instances ts ns =
         doc_rnf_symbols =
             PP.text "rnf (T t) = rnf t"
             $$ PP.text "rnf (N n) = rnf n"
-    in  PP.text "instance Hashable Terminal where"        $$ PP.nest 4 (doc_hash terminal2name ts)
-        $$$ PP.text "instance Hashable NonTerminal where" $$ PP.nest 4 (doc_hash nonterminal2name ns)
-        $$$ PP.text "instance Hashable Symbol where"      $$ PP.nest 4 doc_hash_symbols
+    in  PP.text "instance Hashable Terminal"
+        $$$ PP.text "instance Hashable NonTerminal"
+        $$$ PP.text "instance Hashable Symbol"
         $$$ PP.text "instance NFData Terminal where"      $$ PP.nest 4 (doc_rnf terminal2name ts)
         $$$ PP.text "instance NFData NonTerminal where"   $$ PP.nest 4 (doc_rnf nonterminal2name ns)
         $$$ PP.text "instance NFData Symbol where"        $$ PP.nest 4 doc_rnf_symbols
@@ -313,15 +300,17 @@ gen_code (Grammar ts ns rs a) =
     let doc_ts = (PP.hcat . PP.punctuate (PP.text " | ") . map terminal2name . S.toList) ts
         doc_ns = (PP.hcat . PP.punctuate (PP.text " | ") . map nonterminal2name . S.toList) ns
     in  PP.render $
-            PP.text "module Grammar where"
+            PP.text "{-# LANGUAGE DeriveGeneric #-}"
+            $$$ PP.text "module Grammar where"
             $$$ PP.text "import qualified Data.Set      as S"
             $$ PP.text "import           Data.Hashable"
             $$ PP.text "import           Control.DeepSeq"
+            $$ PP.text "import           GHC.Generics        (Generic)"
             $$$ PP.text "type RID         = Int"
             $$$ PP.text "type Code        = String"
-            $$ PP.text "data Terminal    = " <> doc_ts <> PP.text " deriving (Show, Eq, Ord)"
-            $$ PP.text "data NonTerminal = " <> doc_ns <> PP.text " deriving (Show, Eq, Ord)"
-            $$ PP.text "data Symbol      = T Terminal | N NonTerminal deriving (Show, Eq, Ord)"
+            $$ PP.text "data Terminal    = " <> doc_ts <> PP.text " deriving (Show, Eq, Ord, Generic)"
+            $$ PP.text "data NonTerminal = " <> doc_ns <> PP.text " deriving (Show, Eq, Ord, Generic)"
+            $$ PP.text "data Symbol      = T Terminal | N NonTerminal deriving (Show, Eq, Ord, Generic)"
             $$$ doc_terminals ts
             $$$ doc_nonterminals ns
             $$$ doc_symbols

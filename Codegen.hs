@@ -96,7 +96,7 @@ doc_print_stack =
     $$ wrap_in_braces
         ( PP.text "StackType * p = top;"
         $$ PP.text "printf (\"stack:\\n\");"
-        $$ doc_while (PP.text "p - bottom >= 0") (PP.text "printf (\"\\t%d\\n\", p->state);" $$ PP.text "--p;")
+        $$ doc_while (PP.text "p - bottom >= 0") (PP.text "printf (\"\\t%d\\t%d\\n\", p->state, p->semantics);" $$ PP.text "--p;")
         )
 
 
@@ -173,7 +173,8 @@ doc_state v sid s t2act _ =
             $$
                 ( if is_terminal s
                     then
-                        PP.text "stack->semantics = 0;"
+                        PP.text "stack->semantics = p->semantics;"
+                        $$ (doc_verbose v $ PP.text "printf (\"pushed semantics %d\\n\", p->semantics);")
                         $$ PP.text "p++;"
                         $$ (doc_verbose v $ PP.text "printf (\"shifting %s\\n\", token_names[p->type]);")
                     else PP.empty
@@ -188,7 +189,8 @@ doc_rule :: Verbosity -> LALR1Table -> RID -> NonTerminal -> [Symbol] -> Code ->
 doc_rule v tbl rid n ss c =
     PP.text "reduce_" <> PP.int rid <> PP.colon
     $$ PP.nest 4
-        ( doc_user_code (length ss) c
+        ( (doc_verbose v $ PP.text "print_stack (stack_bottom, stack - 1);")
+        $$ doc_user_code (length ss) c
         $$ (doc_verbose v $ PP.text "printf (\"" <> PP.text (show n) <> PP.text " ----> " <> PP.text (concatMap show ss) <> PP.text "\\n\");")
         $$ (doc_verbose v $ PP.text "printf (\"popped " <> PP.int (length ss) <> PP.text " symbols\\n\");")
         $$ doc_nonterminal v tbl n
@@ -202,7 +204,7 @@ doc_user_code n code =
         subst ('$' : '$' : xs) = "semantics" ++ subst xs
         subst ('$' : xs)       = case break (not . isDigit) xs of
             ("",  _  ) -> '$' : subst xs
-            (xs1, xs2) -> "(stack - " ++ show (n - 1 + read xs1) ++ ")->semantics" ++ subst xs2
+            (xs1, xs2) -> "(stack - " ++ show (n + 1 - read xs1) ++ ")->semantics" ++ subst xs2
         subst (x : xs)         = x : subst xs
     in  (PP.text . subst) code
         $$ PP.text "stack -= " <> PP.int n <> PP.semi

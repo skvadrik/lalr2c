@@ -1,10 +1,12 @@
-module Types where
+{-# LANGUAGE DeriveGeneric #-}
 
+module Types where
 
 import qualified Data.HashMap.Strict  as M
 import qualified Data.Set             as S
 import           Data.Hashable
 import           Debug.Trace
+import           GHC.Generics               (Generic)
 
 import           Grammar
 
@@ -26,7 +28,7 @@ data Action
     | Reduce RID
     | Accept
     | Error
-    deriving (Show)
+    deriving (Show, Generic)
 
 type SID             = Int
 type Core            = (RID, Int)
@@ -41,16 +43,7 @@ type ActionTable     = M.HashMap Terminal Action
 type LALR1Table      = M.HashMap SID (Symbol, ActionTable, GotoTable)
 
 
-hashAndCombine :: Hashable h => Int -> h -> Int
-hashAndCombine acc h = acc `combine` hash h
-
-
-instance Hashable Action where
-    hash (Shift  sid) = 3 + 2 * hash sid
-    hash (Reduce rid) = 2 + 2 * hash rid
-    hash Accept       = 1
-    hash Error        = 0
-
+instance Hashable Action
 
 instance Eq Action where
     Shift  sid1 == Shift  sid2 = sid1 == sid2
@@ -59,9 +52,11 @@ instance Eq Action where
     Error       == Error       = True
     _           == _           = False
 
+hashAndCombine :: Hashable h => Int -> h -> Int
+hashAndCombine acc h = acc `hashWithSalt` h
 
 instance (Hashable a) => Hashable (S.Set a) where
-    hash = S.foldl' hashAndCombine 0
+    hashWithSalt s set = s `hashWithSalt` S.foldl' hashAndCombine 0 set
 
 
 trace' :: Show a => a -> a
