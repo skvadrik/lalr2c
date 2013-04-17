@@ -24,11 +24,13 @@ data Grammar
         [(Int, NonTerminal, [Symbol], Code)]
         NonTerminal
     deriving (Show)
-newtype Terminal
-    = Terminal String
+data Terminal
+    = TString String
+    | TNew
+    | TLambda
     deriving (Show, Ord, Eq, Generic)
 newtype NonTerminal
-    = NonTerminal String
+    = NT String
     deriving (Show, Ord, Eq, Generic)
 data Symbol
     = STerminal    Terminal
@@ -57,8 +59,8 @@ parse_grammar = do
 parse_terminals :: GenParser Char st (S.Set Terminal)
 parse_terminals = do
     tss <- many1 $ do
-        try $ spaces >> string "%token"
-        ts <- many1 $ try $ spaces1 >> Terminal <$> parse_name
+        try $ wsps >> string "%token"
+        ts <- many1 $ try $ wsps1 >> TString <$> parse_name
         return $ S.fromList ts
     return $ S.unions tss
 
@@ -66,17 +68,17 @@ parse_terminals = do
 
 parse_axiom :: GenParser Char st NonTerminal
 parse_axiom = do
-    spaces >> string "%start"
-    ax <- spaces1 >> parse_name
-    return $ NonTerminal ax
+    wsps >> string "%start"
+    ax <- wsps1 >> parse_name
+    return $ NT ax
 
 
 parse_symbol :: S.Set Terminal -> GenParser Char st Symbol
 parse_symbol ts = do
     s <- parse_name
-    return $ if S.member (Terminal s) ts
-        then (STerminal . Terminal) s
-        else (SNonTerminal . NonTerminal) s
+    return $ case s of
+        _ | S.member (TString s) ts -> (STerminal . TString) s
+        _                           -> (SNonTerminal . NT) s
 
 
 parse_code :: GenParser Char st Code
@@ -93,19 +95,23 @@ parse_code = do
 parse_rules :: S.Set Terminal -> GenParser Char st [(NonTerminal, M.HashMap [Symbol] Code)]
 parse_rules ts =
     many1 $ do
-        spaces
-        n  <- NonTerminal <$> parse_name
-        spaces >> char ':' >> spaces
+        wsps
+        n  <- NT <$> parse_name
+        wsps >> char ':' >> wsps
         xs <- sepBy1
             ( do
-                spaces
-                ss <- many1 (parse_symbol ts >>= \ s -> spaces >> return s)
-                spaces
+                wsps
+                ss <- do
+                    ss1 <- many (parse_symbol ts >>= \ s -> wsps >> return s)
+                    case ss1 of
+                        [] -> return [STerminal TLambda]
+                        _  -> return ss1
+                wsps
                 c  <- parse_code <|> return ""
-                spaces
+                wsps
                 return (ss, c)
             ) (char '|')
-        spaces >> char ';' >> spaces
+        wsps >> char ';' >> wsps
         let m = foldl' (\ m (ss, c) -> M.insertWith (error "duplicate rule") ss c m) M.empty xs
         return (n, m)
 
@@ -114,8 +120,23 @@ parse_name :: GenParser Char st String
 parse_name = many1 (alphaNum <|> char '_')
 
 
-spaces1 :: GenParser Char st ()
-spaces1 = skipMany1 space
+wsps :: GenParser Char st ()
+wsps = skipMany wsp
+
+
+wsps1 :: GenParser Char st ()
+wsps1 = skipMany1 wsp
+
+
+wsp :: GenParser Char st ()
+wsp = try comment <|> (space >> return ())
+
+
+comment :: GenParser Char st ()
+comment = do
+    string "/*"
+    manyTill anyChar (try (string "*/"))
+    return ()
 
 
 eol :: GenParser Char st ()
@@ -140,27 +161,29 @@ to_grammar ts rs ax =
                 ) r
 
         rs' = fst $ foldl' add_rules ([], 1) rs
-        ts' = (S.insert (Terminal "lambda") . S.insert (Terminal "new")) ts
+        ts' = (S.insert TLambda . S.insert TNew) ts
     in  Grammar ts' ns rs' ax
 
 
 complement :: Grammar -> Grammar
-complement (Grammar ts ns rs ax@(NonTerminal s)) =
+complement (Grammar ts ns rs ax@(NT s)) =
     let f s = case s ++ "_" of
-            s' | S.notMember (NonTerminal s') ns -> s'
-            s'                         -> f s'
-        ax' = NonTerminal (f s)
+            s' | S.notMember (NT s') ns -> s'
+            s'                          -> f s'
+        ax' = NT (f s)
         ns' = S.insert ax' ns
         rs' = (0, ax', [SNonTerminal ax], "") : rs
     in  Grammar ts ns' rs' ax'
 
 
 terminal2name :: Terminal -> Doc
-terminal2name (Terminal t) = PP.text "T" <> PP.text t
+terminal2name (TString t) = PP.text "T" <> PP.text t
+terminal2name TNew        = PP.text "New"
+terminal2name TLambda     = PP.text "Lambda"
 
 
 nonterminal2name :: NonTerminal -> Doc
-nonterminal2name (NonTerminal n) = PP.text $ "N" ++ n
+nonterminal2name (NT n) = PP.text $ "N" ++ n
 
 
 symbol2name :: Symbol -> Doc
