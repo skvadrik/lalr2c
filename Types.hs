@@ -52,11 +52,8 @@ instance Eq Action where
     Error       == Error       = True
     _           == _           = False
 
-hashAndCombine :: Hashable h => Int -> h -> Int
-hashAndCombine acc h = acc `hashWithSalt` h
-
-instance (Hashable a) => Hashable (S.Set a) where
-    hashWithSalt s set = s `hashWithSalt` S.foldl' hashAndCombine 0 set
+instance Hashable a => Hashable (S.Set a) where
+    hashWithSalt s set = s `hashWithSalt` S.foldl' hashWithSalt 0 set
 
 
 trace' :: Show a => a -> a
