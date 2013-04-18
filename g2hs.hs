@@ -19,24 +19,48 @@ import           Debug.Trace
 
 data Grammar
     = Grammar
-        (S.Set Terminal)
+        (M.HashMap Terminal (Prec, Assoc))
         (S.Set NonTerminal)
-        [(Int, NonTerminal, [Symbol], Code)]
+        [(Int, NonTerminal, [Symbol], (Prec, Assoc), Code)]
         NonTerminal
     deriving (Show)
+
 data Terminal
     = TString String
     | TNew
     | TLambda
     deriving (Show, Ord, Eq, Generic)
+
 newtype NonTerminal
     = NT String
     deriving (Show, Ord, Eq, Generic)
+
 data Symbol
     = STerminal    Terminal
     | SNonTerminal NonTerminal
     deriving (Show, Ord, Eq, Generic)
+
 type Code = String
+
+data Prec
+    = PrecLevel Int
+    | PrecNone
+    deriving (Show)
+
+data Assoc
+    = AssocLeft
+    | AssocRight
+    | AssocNone
+    | AssocDefault
+    deriving (Show)
+
+data Directive
+    = DirToken (S.Set Terminal)
+    | DirLeft (S.Set Terminal)
+    | DirRight (S.Set Terminal)
+    | DirNonassoc (S.Set Terminal)
+    | DirStart NonTerminal
+    deriving (Show)
 
 
 instance Hashable Terminal
@@ -48,37 +72,151 @@ instance Hashable Symbol
 
 parse_grammar :: GenParser Char st Grammar
 parse_grammar = do
-    ts <- parse_terminals
-    ax <- parse_axiom
-    eol >> string "%%" >> eol
-    rs <- parse_rules ts
+    (terminals, axiom) <- parse_header
+    sep
+    rules <- parse_body terminals
     eof
-    return $ to_grammar ts rs ax
+    return $ normalize_grammar terminals rules axiom
+
+
+parse_header :: GenParser Char st (M.HashMap Terminal (Prec, Assoc), Maybe NonTerminal)
+parse_header = normalize_directives <$> many (try $ wsps >> parse_directive)
+
+
+normalize_directives :: [Directive] -> (M.HashMap Terminal (Prec, Assoc), Maybe NonTerminal)
+normalize_directives dirs =
+    let f (pl, ts, ax) dir = case dir of
+            DirToken    xs -> (pl,     S.foldl' (\ m t -> M.insert t (PrecNone,     AssocDefault)  m) ts xs, ax)
+            DirLeft     xs -> (pl + 1, S.foldl' (\ m t -> M.insert t (PrecLevel pl, AssocLeft)     m) ts xs, ax)
+            DirRight    xs -> (pl + 1, S.foldl' (\ m t -> M.insert t (PrecLevel pl, AssocRight)    m) ts xs, ax)
+            DirNonassoc xs -> (pl + 1, S.foldl' (\ m t -> M.insert t (PrecLevel pl, AssocNone)     m) ts xs, ax)
+            DirStart     s -> (pl,     ts,                                                                   Just s)
+        (_, terminals, axiom) = foldl' f (0, M.empty, Nothing) dirs
+    in  (terminals, axiom)
+
+
+parse_directive :: GenParser Char st Directive
+parse_directive =
+    try (DirToken <$> parse_dir_token)
+    <|> try (DirLeft <$> parse_dir_left)
+    <|> try (DirRight <$> parse_dir_right)
+    <|> try (DirNonassoc <$> parse_dir_nonassoc)
+    <|> (DirStart <$> parse_dir_start)
+
+
+parse_dir_token :: GenParser Char st (S.Set Terminal)
+parse_dir_token = do
+    string "%token"
+    parse_terminals
+
+
+parse_dir_left :: GenParser Char st (S.Set Terminal)
+parse_dir_left = do
+    string "%left"
+    parse_terminals
+
+
+parse_dir_right :: GenParser Char st (S.Set Terminal)
+parse_dir_right = do
+    string "%right"
+    parse_terminals
+
+
+parse_dir_nonassoc :: GenParser Char st (S.Set Terminal)
+parse_dir_nonassoc = do
+    string "%nonassoc"
+    parse_terminals
+
+
+parse_dir_start :: GenParser Char st NonTerminal
+parse_dir_start = do
+    string "%start"
+    n <- wsps1 >> parse_nonterminal
+    return n
 
 
 parse_terminals :: GenParser Char st (S.Set Terminal)
 parse_terminals = do
-    tss <- many1 $ do
-        try $ wsps >> string "%token"
-        ts <- many1 $ try $ wsps1 >> TString <$> parse_name
-        return $ S.fromList ts
-    return $ S.unions tss
+    ts <- many1 (try $ wsps1 >> parse_terminal)
+    return $ S.fromList ts
 
 
-
-parse_axiom :: GenParser Char st NonTerminal
-parse_axiom = do
-    wsps >> string "%start"
-    ax <- wsps1 >> parse_name
-    return $ NT ax
+parse_terminal :: GenParser Char st Terminal
+parse_terminal = do
+    TString <$> parse_name
 
 
-parse_symbol :: S.Set Terminal -> GenParser Char st Symbol
-parse_symbol ts = do
-    s <- parse_name
-    return $ case s of
-        _ | S.member (TString s) ts -> (STerminal . TString) s
-        _                           -> (SNonTerminal . NT) s
+parse_nonterminal :: GenParser Char st NonTerminal
+parse_nonterminal = do
+    wsps >> NT <$> parse_name
+
+
+sep :: GenParser Char st ()
+sep = wsps >> string "%%" >> return ()
+
+
+rule_start :: GenParser Char st ()
+rule_start = wsps >> char ':' >> return ()
+
+
+rule_sep :: GenParser Char st ()
+rule_sep = char '|' >> return ()
+
+
+rule_end :: GenParser Char st ()
+rule_end =  wsps >> char ';' >> return ()
+
+
+parse_body :: M.HashMap Terminal (Prec, Assoc) -> GenParser Char st [(NonTerminal, M.HashMap [Symbol] ((Prec, Assoc), Code))]
+parse_body ts = many1 (parse_rule ts)
+
+
+parse_rule :: M.HashMap Terminal (Prec, Assoc) -> GenParser Char st (NonTerminal, M.HashMap [Symbol] ((Prec, Assoc), Code))
+parse_rule ts = do
+    n  <- parse_nonterminal
+    rule_start
+    rs <- sepBy (parse_rule_rhs ts) rule_sep
+    rule_end
+    wsps
+    return (n, M.fromList rs)
+
+
+parse_rule_rhs :: M.HashMap Terminal (Prec, Assoc) -> GenParser Char st ([Symbol], ((Prec, Assoc), Code))
+parse_rule_rhs ts = do
+    symbols    <- parse_symbols (M.keys ts)
+    prec_assoc <- try (parse_precedence ts) <|> return (default_precedence ts symbols)
+    code       <- try (wsps >> parse_code) <|> return ""
+    wsps
+    return (symbols, (prec_assoc, code))
+
+
+parse_symbols :: [Terminal] -> GenParser Char st [Symbol]
+parse_symbols ts = do
+    ss <- many (try $ wsps >> parse_name)
+    return $ case ss of
+        [] -> [STerminal TLambda]
+        _  -> map (to_symbol ts) ss
+
+
+to_symbol :: [Terminal] -> String -> Symbol
+to_symbol ts s = if elem (TString s) ts
+    then (STerminal . TString) s
+    else (SNonTerminal . NT) s
+
+
+parse_precedence :: M.HashMap Terminal (Prec, Assoc) -> GenParser Char st (Prec, Assoc)
+parse_precedence ts = do
+    wsps1 >> string "%prec" >> wsps1
+    t <- parse_terminal
+    return $ M.lookupDefault (error "illegal terminal in %prec directive") t ts
+
+
+default_precedence :: M.HashMap Terminal (Prec, Assoc) -> [Symbol] -> (Prec, Assoc)
+default_precedence ts ss =
+    let f []                    = (PrecNone, AssocDefault)
+        f (STerminal    t : ss) = M.lookupDefault (error "unknown terminal in symbol chain") t ts
+        f (SNonTerminal n : ss) = f ss
+    in  f $ reverse ss
 
 
 parse_code :: GenParser Char st Code
@@ -89,31 +227,6 @@ parse_code = do
     code3 <- many (noneOf "{}")
     char '}'
     return $ code1 ++ code2 ++ code3
-
-
-
-parse_rules :: S.Set Terminal -> GenParser Char st [(NonTerminal, M.HashMap [Symbol] Code)]
-parse_rules ts =
-    many1 $ do
-        wsps
-        n  <- NT <$> parse_name
-        wsps >> char ':' >> wsps
-        xs <- sepBy1
-            ( do
-                wsps
-                ss <- do
-                    ss1 <- many (parse_symbol ts >>= \ s -> wsps >> return s)
-                    case ss1 of
-                        [] -> return [STerminal TLambda]
-                        _  -> return ss1
-                wsps
-                c  <- parse_code <|> return ""
-                wsps
-                return (ss, c)
-            ) (char '|')
-        wsps >> char ';' >> wsps
-        let m = foldl' (\ m (ss, c) -> M.insertWith (error "duplicate rule") ss c m) M.empty xs
-        return (n, m)
 
 
 parse_name :: GenParser Char st String
@@ -139,30 +252,31 @@ comment = do
     return ()
 
 
-eol :: GenParser Char st ()
-eol = skipMany1 $ char '\n'
-
-
-to_grammar :: S.Set Terminal -> [(NonTerminal, M.HashMap [Symbol] Code)] -> NonTerminal -> Grammar
-to_grammar ts rs ax =
-    let ns = (S.fromList . fst . unzip) rs
-
+normalize_grammar :: M.HashMap Terminal (Prec, Assoc) -> [(NonTerminal, M.HashMap [Symbol] ((Prec, Assoc), Code))] -> Maybe NonTerminal -> Grammar
+normalize_grammar ts rs ax =
+    let ns = (fst . unzip) rs
+        ns' = (S.fromList . fst . unzip) rs
+        ax' = case ax of
+            Just a  -> a
+            Nothing -> head ns
         add_rules (rs, max) (n, r) =
             let check_symbol s = case s of
-                    SNonTerminal n -> if S.member n ns
+                    SNonTerminal n -> if S.member n ns'
                         then s
                         else error $ "unknown nonterminal: " ++ show n
                     STerminal    _ -> s
 
-                add_rule (rs, max) ss c = ((max, n, ss, c) : rs, max + 1)
+                add_rule (rs, max) ss (pa, c) = ((max, n, ss, pa, c) : rs, max + 1)
 
             in  ( M.foldlWithKey' add_rule (rs, max)
                 . M.foldlWithKey' (\ m ss c -> M.insert (map check_symbol ss) c m) M.empty
                 ) r
-
         rs' = fst $ foldl' add_rules ([], 1) rs
-        ts' = (S.insert TLambda . S.insert TNew) ts
-    in  Grammar ts' ns rs' ax
+        ts' =
+            ( M.insert TLambda (PrecNone, AssocDefault)
+            . M.insert TNew (PrecNone, AssocDefault)
+            ) ts
+    in  Grammar ts' ns' rs' ax'
 
 
 complement :: Grammar -> Grammar
@@ -172,7 +286,7 @@ complement (Grammar ts ns rs ax@(NT s)) =
             s'                          -> f s'
         ax' = NT (f s)
         ns' = S.insert ax' ns
-        rs' = (0, ax', [SNonTerminal ax], "") : rs
+        rs' = (0, ax', [SNonTerminal ax], (PrecNone, AssocDefault), "") : rs
     in  Grammar ts ns' rs' ax'
 
 
@@ -200,9 +314,9 @@ doc_rhs =
     )
 
 
-doc_rules :: [(Int, NonTerminal, [Symbol], Code)] -> Doc
+doc_rules :: [(Int, NonTerminal, [Symbol], (Prec, Assoc), Code)] -> Doc
 doc_rules rs =
-    let doc_one (i, n, ss, c) = PP.parens
+    let doc_one (i, n, ss, _, c) = PP.parens
             ( PP.int i
             <> PP.text ", "
             <> nonterminal2name n
@@ -222,9 +336,9 @@ doc_rules rs =
         $$ PP.nest 4 rules
 
 
-doc_rid2rule :: [(Int, NonTerminal, [Symbol], Code)] -> Doc
+doc_rid2rule :: [(Int, NonTerminal, [Symbol], (Prec, Assoc), Code)] -> Doc
 doc_rid2rule rs =
-    let doc_one (i, _, ss, _) =
+    let doc_one (i, _, ss, _, _) =
             PP.text "rid2rule "
             <> PP.int i
             <> PP.text " = "
@@ -234,9 +348,9 @@ doc_rid2rule rs =
         $$ PP.text "rid2rule rid = error $ \"RID exceeding maximum possible value: \" ++ show rid"
 
 
-doc_n2rules :: [(Int, NonTerminal, [Symbol], Code)] -> Doc
+doc_n2rules :: [(Int, NonTerminal, [Symbol], (Prec, Assoc), Code)] -> Doc
 doc_n2rules rs =
-    let n2rules = foldl' (\ n2rs (_, n, ss, _) -> M.insertWith (++) n [ss] n2rs) M.empty rs
+    let n2rules = foldl' (\ n2rs (_, n, ss, _, _) -> M.insertWith (++) n [ss] n2rs) M.empty rs
         doc_alts =
             ( PP.brackets
             . PP.vcat
@@ -252,9 +366,9 @@ doc_n2rules rs =
         $$ M.foldlWithKey' doc_one PP.empty n2rules
 
 
-doc_n2rids :: [(Int, NonTerminal, [Symbol], Code)] -> Doc
+doc_n2rids :: [(Int, NonTerminal, [Symbol], (Prec, Assoc), Code)] -> Doc
 doc_n2rids rs =
-    let n2rids = foldl' (\ n2rs (i, n, _, _) -> M.insertWith (++) n [i] n2rs) M.empty rs
+    let n2rids = foldl' (\ n2rs (i, n, _, _, _) -> M.insertWith (++) n [i] n2rs) M.empty rs
         doc_alts =
             ( PP.brackets
             . PP.hcat
@@ -320,7 +434,7 @@ infixl 5 $$$
 
 gen_code :: Grammar -> String
 gen_code (Grammar ts ns rs a) =
-    let doc_ts = (PP.hcat . PP.punctuate (PP.text " | ") . map terminal2name . S.toList) ts
+    let doc_ts = (PP.hcat . PP.punctuate (PP.text " | ") . map terminal2name . M.keys) ts
         doc_ns = (PP.hcat . PP.punctuate (PP.text " | ") . map nonterminal2name . S.toList) ns
     in  PP.render $
             PP.text "{-# LANGUAGE DeriveGeneric #-}"
@@ -334,7 +448,7 @@ gen_code (Grammar ts ns rs a) =
             $$ PP.text "data Terminal    = " <> doc_ts <> PP.text " deriving (Show, Eq, Ord, Generic)"
             $$ PP.text "data NonTerminal = " <> doc_ns <> PP.text " deriving (Show, Eq, Ord, Generic)"
             $$ PP.text "data Symbol      = T Terminal | N NonTerminal deriving (Show, Eq, Ord, Generic)"
-            $$$ doc_terminals ts
+            $$$ doc_terminals ((S.fromList . M.keys) ts)
             $$$ doc_nonterminals ns
             $$$ doc_symbols
             $$$ doc_rules rs
@@ -342,7 +456,7 @@ gen_code (Grammar ts ns rs a) =
             $$$ doc_n2rules rs
             $$$ doc_n2rids rs
             $$$ doc_axiom a
-            $$$ doc_instances ts ns
+            $$$ doc_instances ((S.fromList . M.keys) ts) ns
 
 
 main :: IO ()
