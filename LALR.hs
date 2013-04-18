@@ -55,14 +55,14 @@ symbol_to_first1 =
 
 lalr1_table :: LALR1Table
 lalr1_table =
-    let sid2st_s2sid = lalr1_state_table
-        sids         = M.keys sid2st_s2sid
-        f tbl sid =
-            let (st, s, s2sid) = M.lookupDefault (error "missing state in state table") sid sid2st_s2sid
-                t2action       = action_table st s2sid
-                n2sid          = goto_table s2sid
+    let process_sid :: LALR1Table -> SID -> LALR1Table
+        process_sid tbl sid =
+            let (st, s, s2sid) = M.lookupDefault (error "missing state in state table") sid lalr1_state_table
+                t2action       = update_action_table st s2sid
+                n2sid          = update_goto_table s2sid
             in  M.insert sid (s, t2action, n2sid) tbl
-    in  foldl' f M.empty sids
+        sids = M.keys lalr1_state_table
+    in  foldl' process_sid M.empty sids
 
 
 raise_conflict :: Terminal -> Action -> Action -> a
@@ -85,38 +85,70 @@ report_rr_conflict :: RID -> RID -> String
 report_rr_conflict i j = trace' $ printf "reduce/reduce: (%d) %s vs (%d) %s" i ((show . rid2rule) i) j ((show . rid2rule) j)
 
 
-action_table :: LALR1State -> M.HashMap Symbol SID -> ActionTable
-action_table state s2sid =
--- проверь эту хрень с точки зрения логики. шифты особенно. не должны ли они быть уникальны по построению и т.д.
-    let try_insert act t2act t = case (M.lookup t t2act, act) of
-            (Nothing,         _              ) -> M.insert t act t2act
-            (Just Error,      _              ) -> M.insert t act t2act
-            (Just (Shift i),  Shift j        ) | i == j -> t2act
-            (Just (Shift i),  Shift j        ) | i /= j -> error "Shifting to different states"
-            (Just (Shift i),  Reduce j       ) -> report_sr_conflict i j `seq` t2act
-            (Just (Reduce i), Shift j        ) -> report_sr_conflict j i `seq` M.insert t act t2act
-            (Just (Reduce i), act'@(Reduce j)) -> report_rr_conflict i j `seq`
-                if (length . rid2rule) i < (length . rid2rule) j
-                    then M.insert t act' t2act
-                    else t2act
-            (Just act',           _          ) -> raise_conflict t act' act
-        f t2act cr@(rid, _) ctx =
-            let v = case core2rhs cr of
-                    _ | (cr, ctx) == lalr1_final_item -> Just (ctx, Accept)
-                    []                                -> Just (ctx, Reduce rid)
-                    T t : _                           -> case M.lookup (T t) s2sid of
-                        Just sid -> Just (S.singleton t, Shift sid)
-                        Nothing  -> error "missing goto for terminal"
-                    _                                 -> Nothing
-            in  case v of
-                    Just (ts, act) -> S.foldl' (try_insert act) t2act ts
-                    Nothing        -> t2act
-        t2act = S.foldl' (\ t2act' t -> M.insert t Error t2act') M.empty terminals
-    in  M.foldlWithKey' f t2act state
+update_action_table :: LALR1State -> M.HashMap Symbol SID -> ActionTable
+update_action_table state s2sid =
+    let insert_action :: Action -> ActionTable -> Terminal -> ActionTable
+        insert_action act t2act t = case M.lookup t t2act of
+            Nothing    -> M.insert t act t2act
+            Just Error -> M.insert t act t2act
+            Just act'  ->
+                let act'' = resolve_conflict act act'
+                in  M.insert t act'' t2act
+
+        process_core2ctx :: ActionTable -> Core -> Context -> ActionTable
+        process_core2ctx t2act cr@(rid, _) ctx =
+            case core2rhs cr of
+                _ | (cr, ctx) == lalr1_final_item -> S.foldl' (insert_action Accept) t2act ctx
+                [] ->
+                    let prec = rid2prec rid
+                        act  = Reduce rid prec
+                    in  S.foldl' (insert_action act) t2act ctx
+                T t : _ ->
+                    let sid        = M.lookupDefault (error "missing goto for terminal") (T t) s2sid
+                        prec_assoc = t2prec_assoc t
+                        act        = Shift sid pa
+                    in  insert_action act t2act t
+                _ -> t2act
+
+        initial_table = S.foldl' (\ m t -> M.insert t Error m) M.empty terminals
+    in  M.foldlWithKey' process_core2ctx initial_table state
 
 
-goto_table :: M.HashMap Symbol SID -> GotoTable
-goto_table s2sid =
+resolve_conflict :: Action -> Action -> Action
+-- shift/reduce: try to resolve with precedency and associativity,
+-- if unsuccessful, report conflict and force shift
+resolve_conflict act1@(Shift i (p1, a1)) act2@(Reduce j p2) =
+    case (p1, p2) of
+        (PrecLevel l1, PrecLevel l2) | l1 > l2  -> act1
+        (PrecLevel l1, PrecLevel l2) | l1 < l2  -> act2
+        (PrecLevel l1, PrecLevel l2) | l1 == l2 -> case a1 of
+            AssocLeft  -> act2
+            AssocRight -> act1
+            AssocNone  -> report_sr_conflict i j `seq` act1
+        _ -> report_sr_conflict i j `seq` act1
+resolve_conflict act1@(Reduce i p1) act2@(Shift j (p2, a2)) =
+        (PrecLevel l1, PrecLevel l2) | l1 > l2  -> act1
+        (PrecLevel l1, PrecLevel l2) | l1 < l2  -> act2
+        (PrecLevel l1, PrecLevel l2) | l1 == l2 -> case a2 of
+            AssocLeft  -> act1
+            AssocRight -> act2
+            AssocNone  -> report_sr_conflict j i `seq` act2
+        _ -> report_sr_conflict j i `seq` act2
+-- reduce/reduce: unresolvable, report conflict and force longest rule
+resolve_conflict act1@(Reduce i _) act2@(Reduce j _) = report_rr_conflict i j `seq`
+    if (length . rid2rule) i < (length . rid2rule) j
+        then act2
+        else act1
+-- others: impossible, throw an error
+resolve_conflict (Shift _ _) (Shift _ _) = error "cannot resolve shift/shift conflict"
+resolve_conflict Error       _           = error "cannot resolve Error/X conflict"
+resolve_conflict _           Error       = error "cannot resolve X/Error conflict"
+resolve_conflict Accept      _           = error "cannot resolve Accept/X conflict"
+resolve_conflict _           Accept      = error "cannot resolve X/Accept conflict"
+
+
+update_goto_table :: M.HashMap Symbol SID -> GotoTable
+update_goto_table s2sid =
     let f m (N n) v = M.insert n v m
         f m _     _ = m
     in  M.foldlWithKey' f M.empty s2sid

@@ -24,8 +24,8 @@ data CmdOptions = CmdOpts
     }
 
 data Action
-    = Shift  SID
-    | Reduce RID
+    = Shift SID (Prec, Assoc)
+    | Reduce RID Prec
     | Accept
     | Error
     deriving (Show, Generic)

@@ -126,7 +126,6 @@ doc_parse tbl v =
         $$$ foldl' (\ doc (rid, n, r, c) -> doc $$ (doc_rule v tbl) rid n r c) PP.empty rules
         )
 
--- Maybe implement codegen modes as cmd-key controlled features (save-space, save-time, normal)
 
 doc_parse_signature :: Doc
 doc_parse_signature = PP.text "bool parse (Token * p)"
@@ -156,12 +155,12 @@ doc_state v sid s t2act _ =
         f ts act =
             let d = (map (PP.text . show) . S.toList) ts
             in  case act of
-                    Shift sid' -> doc_multicase d $ doc_goto (PP.text "state_" <> PP.int sid')
-                    Reduce rid -> doc_multicase d $ doc_goto (PP.text "reduce_" <> PP.int rid)
-                    Accept     -> doc_multicase d $
+                    Shift sid' _ -> doc_multicase d $ doc_goto (PP.text "state_" <> PP.int sid')
+                    Reduce rid _ -> doc_multicase d $ doc_goto (PP.text "reduce_" <> PP.int rid)
+                    Accept       -> doc_multicase d $
                         (doc_verbose v $ PP.text "printf (\"SUCCESS\\n\");")
                         $$ PP.text "return true;"
-                    Error       -> PP.empty
+                    Error        -> PP.empty
         act2ts = M.foldlWithKey' (\ m t act -> M.insertWith S.union act (S.singleton t) m) M.empty t2act
         d1 = M.foldlWithKey' (\ doc act ts -> doc $$ f ts act) PP.empty act2ts
         d2 = doc_default $
