@@ -4,8 +4,9 @@ module LALR
 
 
 import qualified Data.Set            as S
-import qualified Data.HashMap.Strict as M
-import           Data.List                (foldl')
+import qualified Data.HashMap.Strict as M hiding (lookupDefault)
+import qualified Data.HashMap.Lazy   as M        (lookupDefault)
+import           Data.List                       (foldl')
 import           Text.Printf
 
 import           Types

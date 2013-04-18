@@ -3,12 +3,13 @@ module Codegen
     ) where
 
 
-import           Data.Char                 (toUpper, isAlphaNum, isDigit)
-import qualified Data.HashMap.Strict as M
+import           Data.Char                        (toUpper, isAlphaNum, isDigit)
+import qualified Data.HashMap.Strict as M  hiding (lookupDefault)
+import qualified Data.HashMap.Lazy   as M         (lookupDefault)
 import qualified Data.Set            as S
-import           Data.List                 (foldl')
+import           Data.List                        (foldl')
 import qualified Text.PrettyPrint    as PP
-import           Text.PrettyPrint          (Doc, ($$), (<>), ($+$))
+import           Text.PrettyPrint                 (Doc, ($$), (<>), ($+$))
 
 import Grammar
 import Types
