@@ -65,26 +65,6 @@ lalr1_table =
     in  foldl' process_sid M.empty sids
 
 
-raise_conflict :: Terminal -> Action -> Action -> a
-raise_conflict t act1 act2 = error $ concat
-    [ "LALR(1) conflict trying to define ACTION function"
-    , "\n\tat symbol "
-    , show t
-    , "\n\ttwo actions possible: "
-    , show act1
-    , " vs "
-    , show act2
-    ]
-
-
-report_sr_conflict :: RID -> RID -> String
-report_sr_conflict i j = trace' $ printf "shift/reduce:  state %d vs (%d) %s" i j ((show . rid2rule) j)
-
-
-report_rr_conflict :: RID -> RID -> String
-report_rr_conflict i j = trace' $ printf "reduce/reduce: (%d) %s vs (%d) %s" i ((show . rid2rule) i) j ((show . rid2rule) j)
-
-
 update_action_table :: LALR1State -> M.HashMap Symbol SID -> ActionTable
 update_action_table state s2sid =
     let insert_action :: Action -> ActionTable -> Terminal -> ActionTable
@@ -106,7 +86,7 @@ update_action_table state s2sid =
                 T t : _ ->
                     let sid        = M.lookupDefault (error "missing goto for terminal") (T t) s2sid
                         prec_assoc = t2prec_assoc t
-                        act        = Shift sid pa
+                        act        = Shift sid prec_assoc
                     in  insert_action act t2act t
                 _ -> t2act
 
@@ -115,6 +95,8 @@ update_action_table state s2sid =
 
 
 resolve_conflict :: Action -> Action -> Action
+-- shift/shift to the same state with equal precedency and associativity: it's ok
+resolve_conflict act@(Shift s1 pa1) (Shift s2 pa2) | s1 == s2 && pa1 == pa2 = act
 -- shift/reduce: try to resolve with precedency and associativity,
 -- if unsuccessful, report conflict and force shift
 resolve_conflict act1@(Shift i (p1, a1)) act2@(Reduce j p2) =
@@ -127,6 +109,7 @@ resolve_conflict act1@(Shift i (p1, a1)) act2@(Reduce j p2) =
             AssocNone  -> report_sr_conflict i j `seq` act1
         _ -> report_sr_conflict i j `seq` act1
 resolve_conflict act1@(Reduce i p1) act2@(Shift j (p2, a2)) =
+    case (p1, p2) of
         (PrecLevel l1, PrecLevel l2) | l1 > l2  -> act1
         (PrecLevel l1, PrecLevel l2) | l1 < l2  -> act2
         (PrecLevel l1, PrecLevel l2) | l1 == l2 -> case a2 of
@@ -135,16 +118,33 @@ resolve_conflict act1@(Reduce i p1) act2@(Shift j (p2, a2)) =
             AssocNone  -> report_sr_conflict j i `seq` act2
         _ -> report_sr_conflict j i `seq` act2
 -- reduce/reduce: unresolvable, report conflict and force longest rule
-resolve_conflict act1@(Reduce i _) act2@(Reduce j _) = report_rr_conflict i j `seq`
-    if (length . rid2rule) i < (length . rid2rule) j
-        then act2
-        else act1
+resolve_conflict act1@(Reduce i p1) act2@(Reduce j p2) = report_rr_conflict i j `seq`
+    case (p1, p2) of
+        (PrecLevel l1, PrecLevel l2) | l1 > l2 -> act1
+        (PrecLevel l1, PrecLevel l2) | l1 < l2 -> act2
+        _ -> if (length . rid2rule) i < (length . rid2rule) j
+            then act2
+            else act1
 -- others: impossible, throw an error
-resolve_conflict (Shift _ _) (Shift _ _) = error "cannot resolve shift/shift conflict"
-resolve_conflict Error       _           = error "cannot resolve Error/X conflict"
-resolve_conflict _           Error       = error "cannot resolve X/Error conflict"
-resolve_conflict Accept      _           = error "cannot resolve Accept/X conflict"
-resolve_conflict _           Accept      = error "cannot resolve X/Accept conflict"
+resolve_conflict act1 act2 = raise_conflict act1 act2
+
+
+raise_conflict :: Action -> Action -> a
+raise_conflict act1 act2 = error $ concat
+    [ "*** error trying to resolve action conflict:"
+    , "\n\tfirst action: "
+    , show act1
+    , "\n\tsecond action: "
+    , show act2
+    ]
+
+
+report_sr_conflict :: RID -> RID -> String
+report_sr_conflict i j = trace' $ printf "shift/reduce:  state %d vs (%d) %s" i j ((show . rid2rule) j)
+
+
+report_rr_conflict :: RID -> RID -> String
+report_rr_conflict i j = trace' $ printf "reduce/reduce: (%d) %s vs (%d) %s" i ((show . rid2rule) i) j ((show . rid2rule) j)
 
 
 update_goto_table :: M.HashMap Symbol SID -> GotoTable

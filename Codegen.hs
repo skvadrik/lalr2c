@@ -122,8 +122,9 @@ doc_parse tbl v =
     $$ wrap_in_braces
         ( doc_init_stack
         $$$ doc_goto (PP.text "state_" <> PP.int 1)
-        $$$ M.foldlWithKey' (\ doc sid (s, actions, gotos) -> doc $$ (doc_state v) sid s actions gotos) PP.empty tbl
-        $$$ foldl' (\ doc (rid, n, r, c) -> doc $$ (doc_rule v tbl) rid n r c) PP.empty rules
+        $$$ M.foldlWithKey' (\ doc sid (s, actions, _) -> doc $$ doc_state v sid s actions) PP.empty tbl
+        $$$ foldl' (\ doc (rid, n, r, c) -> doc $$ (doc_rule v) rid n r c) PP.empty rules
+        $$$ S.foldl' (\ doc n -> doc $$ doc_nonterminal v tbl n) PP.empty nonterminals
         )
 
 
@@ -149,8 +150,8 @@ is_terminal (T _) = True
 is_terminal _     = False
 
 
-doc_state :: Verbosity -> SID -> Symbol -> ActionTable -> GotoTable -> Doc
-doc_state v sid s t2act _ =
+doc_state :: Verbosity -> SID -> Symbol -> ActionTable -> Doc
+doc_state v sid s t2act =
     let d0 = PP.text "p->type"
         f ts act =
             let d = (map (PP.text . show) . S.toList) ts
@@ -185,15 +186,15 @@ doc_state v sid s t2act _ =
             )
 
 
-doc_rule :: Verbosity -> LALR1Table -> RID -> NonTerminal -> [Symbol] -> Code -> Doc
-doc_rule v tbl rid n ss c =
+doc_rule :: Verbosity -> RID -> NonTerminal -> [Symbol] -> Code -> Doc
+doc_rule v rid n ss c =
     PP.text "reduce_" <> PP.int rid <> PP.colon
     $$ PP.nest 4
         ( (doc_verbose v $ PP.text "print_stack (stack_bottom, stack - 1);")
         $$ doc_user_code (length ss) c
         $$ (doc_verbose v $ PP.text "printf (\"" <> PP.text (show n) <> PP.text " ----> " <> PP.text (concatMap show ss) <> PP.text "\\n\");")
         $$ (doc_verbose v $ PP.text "printf (\"popped " <> PP.int (length ss) <> PP.text " symbols\\n\");")
-        $$ doc_nonterminal v tbl n
+        $$ doc_goto (PP.text ("nonterminal_" ++ show n))
         )
 
 
@@ -224,8 +225,11 @@ doc_nonterminal v tbl n =
             in  doc_multicasebreak d $ doc_goto (PP.text "state_" <> PP.int sid)
         d1 = M.foldlWithKey' (\ doc sid sids -> doc $$ f2 sid sids) PP.empty sid2sids
         d2 = doc_default $ doc_goto (PP.text "state_0")
-    in  (doc_verbose v $ PP.text "print_stack (stack_bottom, stack - 1);")
-        $$ doc_switch d0 (d1 $$ d2)
+    in  PP.text ("nonterminal_" ++ show n) <> PP.colon
+        $$ PP.nest 4
+            ( (doc_verbose v $ PP.text "print_stack (stack_bottom, stack - 1);")
+            $$ doc_switch d0 (d1 $$ d2)
+            )
 
 
 ----------------------------------------------------------------------

@@ -46,11 +46,11 @@ type LALR1Table      = M.HashMap SID (Symbol, ActionTable, GotoTable)
 instance Hashable Action
 
 instance Eq Action where
-    Shift  sid1 == Shift  sid2 = sid1 == sid2
-    Reduce rid1 == Reduce rid2 = rid1 == rid2
-    Accept      == Accept      = True
-    Error       == Error       = True
-    _           == _           = False
+    Shift  sid1 (p1, a1) == Shift  sid2 (p2, a2) = sid1 == sid2 && p1 == p2 && a1 == a2
+    Reduce rid1 p1       == Reduce rid2 p2       = rid1 == rid2 && p1 == p2
+    Accept               == Accept               = True
+    Error                == Error                = True
+    _                    == _                    = False
 
 instance Hashable a => Hashable (S.Set a) where
     hashWithSalt s set = s `hashWithSalt` S.foldl' hashWithSalt 0 set
