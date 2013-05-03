@@ -14,10 +14,10 @@ import           Grammar
 
 
 first1 :: [Symbol] -> Context
-first1 []       = S.singleton Lambda
+first1 []       = S.singleton lambda
 first1 (s : ss) =
     let ts = M.lookupDefault (error "yikes") s symbol_to_first1
-    in  if S.member Lambda ts
+    in  if S.member lambda ts
             then S.union ts (first1 ss)
             else ts
 
@@ -31,14 +31,14 @@ symbol_to_first1 =
         init_nonterminal m n =
             let rs  = n2rules n
                 ts1 = (S.fromList . map ((\ (T t) -> t) . head) . filter terminal_headed) rs
-                ts2 = if elem [] rs then S.insert Lambda ts1 else ts1
+                ts2 = if elem [] rs then S.insert lambda ts1 else ts1
             in  M.insert (N n) ts2 m
-        f _  ys []              = ys
-        f xs ys (T Lambda : ss) = f xs ys ss
-        f _  ys (T t : _)       = S.insert t ys
-        f xs ys (N n : ss)      =
+        f _  ys []                       = ys
+        f xs ys (T t : ss) | t == lambda = f xs ys ss
+        f _  ys (T t : _)                = S.insert t ys
+        f xs ys (N n : ss)               =
             let zs = M.lookupDefault (error "aargh") (N n) xs
-            in  if S.member Lambda zs
+            in  if S.member lambda zs
                     then f xs (S.union ys zs) ss
                     else S.union ys zs
         update xs n =
@@ -159,7 +159,7 @@ lalr1_final_item =
     let rid = case n2rids axiom of
             [rid'] -> rid'
             _      -> error "bad axiom rule in grammar"
-        ctx = S.singleton (Lambda)
+        ctx = S.singleton lambda
     in  ((rid, 1), ctx)
 
 
@@ -228,7 +228,7 @@ lookahead_table =
             let init_table = M.foldlWithKey'
                     (\ m sid (st, _, _) -> M.insert sid (S.foldl' (\ m cr -> M.insert cr (S.empty, S.empty) m) M.empty st) m
                     ) M.empty lr0_state_table
-                init_table' = M.adjust (M.map (\ (lookahead, v) -> (S.insert Lambda lookahead, v))) 1 init_table
+                init_table' = M.adjust (M.map (\ (lookahead, v) -> (S.insert lambda lookahead, v))) 1 init_table
             in  M.foldlWithKey' fold_kernel (init_table', M.empty)
 
     in  (propagate . fst . fold_table) lr0_state_table
@@ -255,7 +255,7 @@ lalr1_closing_ open closed                   =
             N n : ss ->
                 let ctx' =
                         let ctx1 = first1 ss
-                        in  if S.member Lambda ctx1 then S.union ctx1 ctx else ctx1
+                        in  if S.member lambda ctx1 then S.union ctx1 ctx else ctx1
                     f (open, closed) rid =
                         let cr' = (rid, 0)
                         in  case (rid2rule rid, M.lookup cr' closed) of
@@ -291,8 +291,8 @@ lr0_state_table :: LR0StateTable
 lr0_state_table =
     let init_state  = (lr0_closing . S.singleton) lr0_init_item
         open        = M.insert init_state (1, N axiom) M.empty
-        closed      = M.insert lr0_empty_state (0, T Lambda) open
-        result      = M.insert 0 (lr0_empty_state, T Lambda, fgoto_empty) M.empty
+        closed      = M.insert lr0_empty_state (0, T lambda) open
+        result      = M.insert 0 (lr0_empty_state, T lambda, fgoto_empty) M.empty
         max         = 2
     in  lr0_state_table_ (open, closed, result, max)
 

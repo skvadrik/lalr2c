@@ -7,7 +7,9 @@ import           Data.Char                        (toUpper, isAlphaNum, isDigit)
 import qualified Data.HashMap.Strict as M  hiding (lookupDefault)
 import qualified Data.HashMap.Lazy   as M         (lookupDefault)
 import qualified Data.Set            as S
-import           Data.List                        (foldl')
+import           Data.List                        (delete, sort, sortBy)
+import           Data.Function                    (on)
+import           Data.Maybe                       (isJust)
 import qualified Text.PrettyPrint    as PP
 import           Text.PrettyPrint                 (Doc, ($$), (<>), ($+$))
 
@@ -16,223 +18,308 @@ import Types
 
 
 codegen :: LALR1Table -> Verbosity -> FilePath -> FilePath -> IO ()
-codegen tbl v fcpp fh = do
-    writeFile fh $ PP.render $ wrap_in_define fh $
-        doc_defines
-        $$$ doc_tokens
-        $$$ doc_protos
-    writeFile fcpp $ PP.render $
-        doc_includes fh
-        $$$ (verbose v $ doc_print_stack $$$ doc_print_buffer)
-        $$$ doc_parse tbl v
+codegen tbl v fsource fheader = do
+    writeFile fheader $ PP.render $
+        wrap_in_ifndefs fheader doc_tokens
+    writeFile fsource $ PP.render $
+        maybe_doc_code entry
+        $$$ PP.nest 4 (doc_parser tbl v)
+        $$$ maybe_doc_code ending
 
 
-wrap_in_define :: FilePath -> Doc -> Doc
-wrap_in_define fp d =
-    let d' = PP.text $ '_' : map (\ c -> if isAlphaNum c then toUpper c else '_') fp
-    in  PP.text "#ifndef " <> d'
-        $$ PP.text "#define " <> d'
+wrap_in_ifndefs :: FilePath -> Doc -> Doc
+wrap_in_ifndefs hdr d =
+    let doc_hdr =
+           ( (PP.text "__" <>)
+           . (<> PP.text "__")
+           . PP.text
+           . map toUpper
+           . takeWhile isAlphaNum
+           ) hdr
+    in  PP.text "#ifndef " <> doc_hdr
+        $$ PP.text "#define " <> doc_hdr
         $$$ d
-        $$$ PP.text "#endif // " <> d'
-
-
-doc_includes :: FilePath -> Doc
-doc_includes fp =
-    PP.text "#include <stdio.h>"
-    $$$ PP.text "#include \"" <> PP.text fp <> PP.char '"'
-
-
-doc_defines :: Doc
-doc_defines =
-    PP.text "#define STACK_SIZE     1024"
-    $$ PP.text "#define VERBOSE        false"
-    $$ PP.text "#define N_BUFFER_DEBUG 1"
+        $$$ PP.text "#endif // " <> doc_hdr
 
 
 doc_tokens :: Doc
 doc_tokens =
-    let tokens =
+    let doc_macro_name_token  = PP.text "LALR2C_TOKEN"
+        doc_macro_name_tokens = PP.text "LALR2C_TOKENS"
+        doc_define            = PP.text "#define "
+        doc_carry             = PP.text " \\"
+        doc_wrap_one_terminal =
+            ( (<> doc_carry)
+            . (doc_macro_name_token <>)
+            . PP.parens
+            . doc_terminal
+            )
+        doc_wrap_terminals =
             ( PP.vcat
-            . map
-                ( (\ t -> PP.text "TOKEN(" <> PP.text t <> PP.text ") \\") 
-                . show
-                )
+            . map doc_wrap_one_terminal
             . S.toList
+            . S.filter (/= New)
             ) terminals
-    in  PP.text "#define TOKENS \\"
-        $$ PP.nest 4 tokens
-        $$$ PP.text "#define TOKEN(x) #x,"
-        $$ PP.text "static const char * token_names [] ="
-        $$ ( wrap_in_braces $ PP.text "TOKENS") <> PP.semi
-        $$ PP.text "#undef TOKEN"
-        $$$ PP.text "#define TOKEN(x) x,"
-        $$ PP.text "enum Token"
-        $$ wrap_in_braces
-            ( PP.text "TOKENS"
-            $$ PP.text "TOKEN_NUMBER"
-            ) <> PP.semi
-        $$ PP.text "#undef TOKEN"
-        $$$ PP.text "struct StackType"
-        $$ wrap_in_braces
-            ( PP.text "int state;"
-            $$ PP.text "Semantics semantics;"
-            ) <> PP.semi
+    in  doc_define <> doc_macro_name_tokens <> doc_carry
+        $$ PP.nest 4 doc_wrap_terminals
 
 
-doc_protos :: Doc
-doc_protos =
-    doc_parse_signature <> PP.semi
-    $$ doc_print_buffer_signature <> PP.semi
-    $$ doc_print_stack_signature <> PP.semi
+doc_parser :: LALR1Table -> Verbosity -> Doc
+doc_parser tbl v =
+    let sids = (delete 0 . sort . M.keys) tbl
+        doc_dispatch_states =
+            ( PP.vcat
+            . map (\ (sid, (s, acts, _)) -> doc_dispatch_state v sid s acts)
+            . filter ((/= 0) . fst)
+            . sortBy (compare `on` fst)
+            . M.toList
+            ) tbl
+        doc_dispatch_rules =
+            ( PP.vcat
+            . map (doc_dispatch_rule v)
+            ) rules
+        doc_dispatch_nonterminals =
+            ( PP.vcat
+            . map (doc_dispatch_nonterminal v tbl)
+            . S.toList
+            ) nonterminals
+    in  doc_parser_entry sids
+        $$$ doc_dispatch_states
+        $$$ doc_dispatch_rules
+        $$$ doc_dispatch_nonterminals
+        $$$ maybe_doc_fin
 
 
-doc_print_stack_signature :: Doc
-doc_print_stack_signature =
-    PP.text "void print_stack (const StackType * bottom, StackType * top)"
+doc_parser_entry :: [SID] -> Doc
+doc_parser_entry sids = case freeze of
+    Nothing -> doc_goto_state 1
+    Just _  ->
+        let di = doc_is_1st_call
+            dt = doc_assign doc_is_1st_call (PP.text "false") $$ doc_goto_state 1
+            de =
+                let doc_guard = doc_stack_state 0
+                    doc_cases =
+                        ( PP.vcat
+                        . map (\ sid -> doc_case (PP.int sid) (doc_goto_state sid))
+                        ) sids
+                in  doc_switch doc_guard doc_cases
+        in  PP.text "static bool " <> doc_assign doc_is_1st_call (PP.text "true")
+            $$ doc_ifthenelse di dt de
 
 
-doc_print_stack :: Doc
-doc_print_stack =
-    doc_print_stack_signature
-    $$ wrap_in_braces
-        ( PP.text "StackType * p = top;"
-        $$ PP.text "printf (\"stack:\\n\");"
-        $$ doc_while (PP.text "p - bottom >= 0") (PP.text "printf (\"\\t%d\\t%d\\n\", p->state, p->semantics);" $$ PP.text "--p;")
+doc_dispatch_state :: Verbosity -> SID -> Symbol -> ActionTable -> Doc
+doc_dispatch_state _ sid s t2act =
+    let act2ts =
+            let group_by_act m t act = M.insertWith S.union act (S.singleton t) m
+            in  M.foldlWithKey' group_by_act M.empty t2act
+        doc_normal_case (act, ts) =
+            let doc_guards = (map doc_terminal . S.toList) ts
+            in  case act of
+                    Shift sid' _ -> doc_multicase doc_guards (doc_goto_state sid')
+                    Reduce rid _ -> doc_multicase doc_guards (doc_goto_reduce rid)
+                    Accept       -> doc_multicase doc_guards doc_success_action
+                    Error        -> PP.empty {- these go to default case -}
+        doc_normal_cases =
+            ( PP.vcat
+            . map doc_normal_case
+            . M.toList
+            ) act2ts
+        doc_freeze_case = case freeze of
+            Just (t, c) -> doc_case (PP.text t) (PP.text c)
+            Nothing     -> doc_goto_fin
+        doc_dispatch = doc_switch
+            doc_token_type
+            ( doc_normal_cases
+            $$ doc_freeze_case
+            $$ doc_default doc_failure_action
+            )
+        maybe_doc_shift = if is_terminal s {- true for shift states only -}
+            then
+                doc_assign (doc_stack_semantics 0) doc_token_semantics
+                $$ doc_shift_token
+            else PP.empty
+    in  doc_decl_state sid
+        $$ PP.nest 4
+            ( doc_assign (doc_stack_state 0) (doc_sid sid)
+            $$ maybe_doc_shift
+            $$ doc_reserve_stack
+            $$ doc_dispatch
+            )
+
+
+doc_dispatch_rule :: Verbosity -> (RID, NonTerminal, [Symbol], Maybe Code) -> Doc
+doc_dispatch_rule _ (rid, n, ss, c) =
+    doc_decl_reduce rid
+    $$ PP.nest 4
+        ( doc_user_code (length ss) c
+        $$ doc_goto_nonterminal n
         )
 
 
-doc_print_buffer_signature :: Doc
-doc_print_buffer_signature =
-    PP.text "void print_buffer (Token * begin, Token * end)"
+doc_user_code :: Int -> Maybe Code -> Doc
+doc_user_code n Nothing     = doc_pop_stack n
+doc_user_code n (Just code) =
+    let subst ""               = PP.empty
+        subst ('$' : '$' : xs) = doc_tmp_semantics <> subst xs
+        subst ('$' : xs)       = case break (not . isDigit) xs of
+            ("",  _  ) -> PP.char '$' <> subst xs
+            (xs1, xs2) -> doc_stack_semantics (n + 1 - read xs1) <> subst xs2
+        subst (x : xs)         = PP.char x <> subst xs
+    in  subst code
+        $$ doc_pop_stack n
+        $$ doc_assign (doc_stack_semantics 0) doc_tmp_semantics
 
 
-doc_print_buffer :: Doc
-doc_print_buffer =
-    doc_print_buffer_signature
-    $$ wrap_in_braces
-        ( PP.text "Token * p = begin;"
-        $$ PP.text "printf (\"buffer:\");"
-        $$ doc_while (PP.text "end - p > 0") (PP.text "printf (\"\\t%s\\n\", token_names [p++->type]);")
-        )
+doc_dispatch_nonterminal :: Verbosity -> LALR1Table -> NonTerminal -> Doc
+doc_dispatch_nonterminal _ tbl n =
+    let f m sid (_, _, gotos) =
+            let sid' = M.lookupDefault (error "can't find nonterminal") n gotos
+            in  M.insertWith S.union sid' (S.singleton sid) m
+        sid2sids = M.foldlWithKey' f M.empty tbl
+        doc_one_case (sid, sids) =
+            let doc_guards = (map doc_sid . S.toList) sids
+            in  if sid == 0 {- zero state is the empty state -}
+                    then PP.empty
+                    else doc_multicase doc_guards (doc_goto_state sid)
+        doc_cases =
+            ( PP.vcat
+            . map doc_one_case
+            . M.toList
+            ) sid2sids
+        doc_dispatch = doc_switch
+            (doc_stack_state 1)
+            (doc_cases $$ doc_default doc_failure_action)
+    in  doc_decl_nonterminal n
+        $$ PP.nest 4 doc_dispatch
 
 
-doc_parse :: LALR1Table -> Verbosity -> Doc
-doc_parse tbl v =
-    doc_parse_signature
-    $$ wrap_in_braces
-        ( doc_init_stack
-        $$$ doc_goto (PP.text "state_" <> PP.int 1)
-        $$$ M.foldlWithKey' (\ doc sid (s, actions, _) -> doc $$ doc_state v sid s actions) PP.empty tbl
-        $$$ foldl' (\ doc (rid, n, r, c) -> doc $$ (doc_rule v) rid n r c) PP.empty rules
-        $$$ S.foldl' (\ doc n -> doc $$ doc_nonterminal v tbl n) PP.empty nonterminals
-        )
+maybe_doc_code :: Maybe Code -> Doc
+maybe_doc_code Nothing  = PP.empty
+maybe_doc_code (Just c) = PP.text c
 
 
-doc_parse_signature :: Doc
-doc_parse_signature = PP.text "bool parse (Token * p)"
+maybe_doc_fin :: Doc
+maybe_doc_fin =
+    if isJust success || isJust failure || isJust freeze
+        then doc_decl_fin
+        else PP.empty
 
 
-doc_init_stack :: Doc
-doc_init_stack =
-    PP.text "StackType * stack = new StackType "
-    <> PP.brackets (PP.text "STACK_SIZE")
-    <> PP.semi
-    $$ PP.text "const StackType * stack_bottom = &stack[0];"
-    $$ PP.text "U32B semantics;"
+-- User-defined symbols
+doc_token_type :: Doc
+doc_token_type = PP.text "LALR2C_R_TOKEN_TYPE"
+
+doc_token_semantics :: Doc
+doc_token_semantics = PP.text "LALR2C_R_TOKEN_SEMANTICS"
+
+doc_stack_state :: Int -> Doc
+doc_stack_state n = PP.text "LALR2C_RW_STACK_STATE " <> PP.parens (PP.int n)
+
+doc_stack_semantics :: Int -> Doc
+doc_stack_semantics n = PP.text "LALR2C_RW_STACK_SEMANTICS " <> PP.parens (PP.int n)
+
+doc_shift_token :: Doc
+doc_shift_token = PP.text "LALR2C_E_SHIFT_TOKEN ();"
+
+doc_reserve_stack :: Doc
+doc_reserve_stack = PP.text "LALR2C_E_RESERVE_STACK ();"
+
+doc_pop_stack :: Int -> Doc
+doc_pop_stack n = PP.text "LALR2C_E_STACK_POP " <> PP.parens (PP.int n) <> PP.semi
+
+doc_tmp_semantics :: Doc
+doc_tmp_semantics = PP.text "LALR2C_RW_TMP_SEMANTICS"
 
 
+-- Internal symbol
+doc_is_1st_call :: Doc
+doc_is_1st_call = PP.text "LALR2C_IS_1ST_CALL"
+
+
+-- Internal types
+doc_sid :: SID -> Doc
+doc_sid = PP.int
+
+doc_rid :: RID -> Doc
+doc_rid = PP.int
+
+doc_nonterminal :: NonTerminal -> Doc
+doc_nonterminal = PP.text . show
+
+doc_terminal :: Terminal -> Doc
+doc_terminal = PP.text . tail . show
+
+
+-- Labels
+doc_label :: Doc -> Doc
+doc_label d = PP.text "lalr2c_" <> d
+
+doc_label_state :: SID -> Doc
+doc_label_state sid = doc_label (PP.text "state_" <> doc_sid sid)
+
+doc_label_reduce :: RID -> Doc
+doc_label_reduce rid = doc_label (PP.text "reduce_" <> doc_rid rid)
+
+doc_label_nonterminal :: NonTerminal -> Doc
+doc_label_nonterminal n = doc_label (PP.text "nonterminal_" <> doc_nonterminal n)
+
+doc_label_fin :: Doc
+doc_label_fin = doc_label (PP.text "fin")
+
+
+-- Gotos
 doc_goto :: Doc -> Doc
 doc_goto d = PP.text "goto " <> d <> PP.semi
+
+doc_goto_state :: SID -> Doc
+doc_goto_state sid = doc_goto $ doc_label_state sid
+
+doc_goto_reduce :: RID -> Doc
+doc_goto_reduce rid = doc_goto $ doc_label_reduce rid
+
+doc_goto_nonterminal :: NonTerminal -> Doc
+doc_goto_nonterminal n = doc_goto $ doc_label_nonterminal n
+
+doc_goto_fin :: Doc
+doc_goto_fin = doc_goto doc_label_fin
+
+
+-- Label declarations
+doc_decl :: Doc -> Doc
+doc_decl d = d <> PP.colon
+
+doc_decl_state :: SID -> Doc
+doc_decl_state sid = doc_decl $ doc_label_state sid
+
+doc_decl_reduce :: RID -> Doc
+doc_decl_reduce rid = doc_decl $ doc_label_reduce rid
+
+doc_decl_nonterminal :: NonTerminal -> Doc
+doc_decl_nonterminal n = doc_decl $ doc_label_nonterminal n
+
+doc_decl_fin :: Doc
+doc_decl_fin = doc_decl doc_label_fin
+
+
+doc_assign :: Doc -> Doc -> Doc
+doc_assign d1 d2 = d1 <> PP.text " = " <> d2 <> PP.semi
+
+
+doc_success_action :: Doc
+doc_success_action = case success of
+    Just sc -> PP.text sc
+    Nothing -> doc_goto_fin
+
+
+doc_failure_action :: Doc
+doc_failure_action = case failure of
+    Just fl -> PP.text fl
+    Nothing -> doc_goto_fin
 
 
 is_terminal :: Symbol -> Bool
 is_terminal (T _) = True
 is_terminal _     = False
-
-
-doc_state :: Verbosity -> SID -> Symbol -> ActionTable -> Doc
-doc_state v sid s t2act =
-    let d0 = PP.text "p->type"
-        f ts act =
-            let d = (map (PP.text . show) . S.toList) ts
-            in  case act of
-                    Shift sid' _ -> doc_multicase d $ doc_goto (PP.text "state_" <> PP.int sid')
-                    Reduce rid _ -> doc_multicase d $ doc_goto (PP.text "reduce_" <> PP.int rid)
-                    Accept       -> doc_multicase d $
-                        (doc_verbose v $ PP.text "printf (\"SUCCESS\\n\");")
-                        $$ PP.text "return true;"
-                    Error        -> PP.empty
-        act2ts = M.foldlWithKey' (\ m t act -> M.insertWith S.union act (S.singleton t) m) M.empty t2act
-        d1 = M.foldlWithKey' (\ doc act ts -> doc $$ f ts act) PP.empty act2ts
-        d2 = doc_default $
-            (doc_verbose v $ PP.text "printf (\"FAIL\\n\");")
-            $$ PP.text "return false;"
-    in  PP.text "state_" <> PP.int sid <> PP.colon
-        $$ PP.nest 4
-            ( PP.text "stack->state = " <> PP.int sid <> PP.semi
-            $$ (doc_verbose v $ PP.text "printf (\"pushed %d\\n\", stack->state);")
-            $$
-                ( if is_terminal s
-                    then
-                        PP.text "stack->semantics = p->semantics;"
-                        $$ (doc_verbose v $ PP.text "printf (\"pushed semantics %d\\n\", p->semantics);")
-                        $$ PP.text "p++;"
-                        $$ (doc_verbose v $ PP.text "printf (\"shifting %s\\n\", token_names[p->type]);")
-                    else PP.empty
-                )
-            $$ PP.text "stack++;"
-            $$ (doc_verbose v $ PP.text "print_buffer (p, p + N_BUFFER_DEBUG);")
-            $$ doc_switch d0 (d1 $$ d2)
-            )
-
-
-doc_rule :: Verbosity -> RID -> NonTerminal -> [Symbol] -> Code -> Doc
-doc_rule v rid n ss c =
-    PP.text "reduce_" <> PP.int rid <> PP.colon
-    $$ PP.nest 4
-        ( (doc_verbose v $ PP.text "print_stack (stack_bottom, stack - 1);")
-        $$ doc_user_code (length ss) c
-        $$ (doc_verbose v $ PP.text "printf (\"" <> PP.text (show n) <> PP.text " ----> " <> PP.text (concatMap show ss) <> PP.text "\\n\");")
-        $$ (doc_verbose v $ PP.text "printf (\"popped " <> PP.int (length ss) <> PP.text " symbols\\n\");")
-        $$ doc_goto (PP.text ("nonterminal_" ++ show n))
-        )
-
-
-doc_user_code :: Int -> Code -> Doc
-doc_user_code n "{}" = PP.text "stack -= " <> PP.int n <> PP.semi
-doc_user_code n code =
-    let subst ""               = ""
-        subst ('$' : '$' : xs) = "semantics" ++ subst xs
-        subst ('$' : xs)       = case break (not . isDigit) xs of
-            ("",  _  ) -> '$' : subst xs
-            (xs1, xs2) -> "(stack - " ++ show (n + 1 - read xs1) ++ ")->semantics" ++ subst xs2
-        subst (x : xs)         = x : subst xs
-    in  (PP.text . subst) code
-        $$ PP.text "stack -= " <> PP.int n <> PP.semi
-        $$ PP.text "stack->semantics = semantics;"
-
-
-doc_nonterminal :: Verbosity -> LALR1Table -> NonTerminal -> Doc
-doc_nonterminal v tbl n =
-    let d0 = PP.text "(stack - 1)->state"
-        f1 m sid (_, _, gotos) =
-            let sid' = M.lookupDefault (error "can't find nonterminal") n gotos
-            in  M.insertWith S.union sid' (S.singleton sid) m
-        sid2sids = M.foldlWithKey' f1 M.empty tbl
-        f2 0   _    = PP.empty
-        f2 sid sids =
-            let d = (map (PP.text . show) . S.toList) sids
-            in  doc_multicasebreak d $ doc_goto (PP.text "state_" <> PP.int sid)
-        d1 = M.foldlWithKey' (\ doc sid sids -> doc $$ f2 sid sids) PP.empty sid2sids
-        d2 = doc_default $ doc_goto (PP.text "state_0")
-    in  PP.text ("nonterminal_" ++ show n) <> PP.colon
-        $$ PP.nest 4
-            ( (doc_verbose v $ PP.text "print_stack (stack_bottom, stack - 1);")
-            $$ doc_switch d0 (d1 $$ d2)
-            )
-
-
-----------------------------------------------------------------------
 
 
 ($$$) :: Doc -> Doc -> Doc
@@ -241,7 +328,7 @@ doc_nonterminal v tbl n =
 ($$$) d1 d2                 = d1 $$ PP.text "" $$ d2
 infixl 5 $$$
 
-
+{-
 verbose :: Verbosity -> Doc -> Doc
 verbose v d = case v of
     V0 -> PP.empty
@@ -250,7 +337,7 @@ verbose v d = case v of
 
 doc_verbose :: Verbosity -> Doc -> Doc
 doc_verbose v d = verbose v $ doc_ifthen (PP.text "VERBOSE") d
-
+-}
 
 wrap_in_braces :: Doc -> Doc
 wrap_in_braces d =
@@ -258,39 +345,39 @@ wrap_in_braces d =
     $+$ PP.nest 4 d
     $$ PP.text "}"
 
-
+{-
 doc_ifthen :: Doc -> Doc -> Doc
 doc_ifthen d1 d2 =
     PP.text "if " <> PP.parens d1
     $$ wrap_in_braces d2
+-}
 
-{-
 doc_ifthenelse :: Doc -> Doc -> Doc -> Doc
 doc_ifthenelse d1 d2 d3 =
     PP.text "if " <> PP.parens d1
     $$ wrap_in_braces d2
     $$ PP.text "else"
     $$ wrap_in_braces d3
--}
 
+{-
 doc_while :: Doc -> Doc -> Doc
 doc_while d1 d2 =
     PP.text "while " <> (PP.parens d1)
     $$ (wrap_in_braces d2)
-
+-}
 
 doc_switch :: Doc -> Doc -> Doc
 doc_switch d1 d2 =
     PP.text "switch " <> (PP.parens d1)
     $$ (wrap_in_braces d2)
 
-{-
+
 doc_case :: Doc -> Doc -> Doc
 doc_case d1 d2 =
     PP.text "case " <> d1 <> PP.colon
     $$ PP.nest 4 d2
 
-
+{-
 doc_casebreak :: Doc -> Doc -> Doc
 doc_casebreak d1 d2 =
     PP.text "case " <> d1 <> PP.colon
@@ -302,12 +389,12 @@ doc_multicase ds d =
     (PP.vcat $ map (\ d -> PP.text "case " <> d <> PP.colon) ds)
     $$ PP.nest 4 d
 
-
+{-
 doc_multicasebreak :: [Doc] -> Doc -> Doc
 doc_multicasebreak ds d =
     (PP.vcat $ map (\ d -> PP.text "case " <> d <> PP.colon) ds)
     $$ PP.nest 4 (d $$ PP.text "break;")
-
+-}
 
 doc_default :: Doc -> Doc
 doc_default d = PP.text "default:" $$ PP.nest 4 d
