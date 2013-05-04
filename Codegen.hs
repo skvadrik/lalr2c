@@ -9,7 +9,6 @@ import qualified Data.HashMap.Lazy   as M         (lookupDefault)
 import qualified Data.Set            as S
 import           Data.List                        (delete, sort, sortBy)
 import           Data.Function                    (on)
-import           Data.Maybe                       (isJust)
 import qualified Text.PrettyPrint    as PP
 import           Text.PrettyPrint                 (Doc, ($$), (<>), ($+$))
 
@@ -87,13 +86,12 @@ doc_parser tbl v =
         $$$ doc_dispatch_states
         $$$ doc_dispatch_rules
         $$$ doc_dispatch_nonterminals
-        $$$ maybe_doc_fin
+        $$$ doc_decl_fin
 
 
 doc_parser_entry :: [SID] -> Doc
-doc_parser_entry sids = case freeze of
-    Nothing -> doc_goto_state 1
-    Just _  ->
+doc_parser_entry sids = if reentrant
+    then
         let di = doc_is_1st_call
             dt = doc_assign doc_is_1st_call (PP.text "false") $$ doc_goto_state 1
             de =
@@ -105,6 +103,7 @@ doc_parser_entry sids = case freeze of
                 in  doc_switch doc_guard doc_cases
         in  PP.text "static bool " <> doc_assign doc_is_1st_call (PP.text "true")
             $$ doc_ifthenelse di dt de
+    else doc_goto_state 1
 
 
 doc_dispatch_state :: Verbosity -> SID -> Symbol -> ActionTable -> Doc
@@ -117,20 +116,21 @@ doc_dispatch_state _ sid s t2act =
             in  case act of
                     Shift sid' _ -> doc_multicase doc_guards (doc_goto_state sid')
                     Reduce rid _ -> doc_multicase doc_guards (doc_goto_reduce rid)
-                    Accept       -> doc_multicase doc_guards doc_success_action
+                    Accept       -> doc_multicase doc_guards doc_goto_fin
                     Error        -> PP.empty {- these go to default case -}
         doc_normal_cases =
             ( PP.vcat
             . map doc_normal_case
             . M.toList
             ) act2ts
-        doc_freeze_case = case freeze of
-            Just (t, c) -> doc_case (PP.text t) (PP.text c)
-            Nothing     -> doc_goto_fin
+        doc_phony_cases =
+            ( PP.vcat
+            . map (\ (t, c) -> doc_case (PP.text t) (PP.text c))
+            ) phony
         doc_dispatch = doc_switch
             doc_token_type
             ( doc_normal_cases
-            $$ doc_freeze_case
+            $$ doc_phony_cases
             $$ doc_default doc_failure_action
             )
         maybe_doc_shift = if is_terminal s {- true for shift states only -}
@@ -196,13 +196,6 @@ doc_dispatch_nonterminal _ tbl n =
 maybe_doc_code :: Maybe Code -> Doc
 maybe_doc_code Nothing  = PP.empty
 maybe_doc_code (Just c) = PP.text c
-
-
-maybe_doc_fin :: Doc
-maybe_doc_fin =
-    if isJust success || isJust failure || isJust freeze
-        then doc_decl_fin
-        else PP.empty
 
 
 -- User-defined symbols
@@ -303,12 +296,6 @@ doc_decl_fin = doc_decl doc_label_fin
 
 doc_assign :: Doc -> Doc -> Doc
 doc_assign d1 d2 = d1 <> PP.text " = " <> d2 <> PP.semi
-
-
-doc_success_action :: Doc
-doc_success_action = case success of
-    Just sc -> PP.text sc
-    Nothing -> doc_goto_fin
 
 
 doc_failure_action :: Doc
