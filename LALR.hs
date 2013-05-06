@@ -99,26 +99,26 @@ resolve_conflict :: Action -> Action -> Action
 resolve_conflict act@(Shift s1 pa1) (Shift s2 pa2) | s1 == s2 && pa1 == pa2 = act
 -- shift/reduce: try to resolve with precedency and associativity,
 -- if unsuccessful, report conflict and force shift
-resolve_conflict act1@(Shift i (p1, a1)) act2@(Reduce j p2) =
+resolve_conflict act1@(Shift _ (p1, a1)) act2@(Reduce _ p2) =
     case (p1, p2) of
         (PrecLevel l1, PrecLevel l2) | l1 > l2  -> act1
         (PrecLevel l1, PrecLevel l2) | l1 < l2  -> act2
         (PrecLevel l1, PrecLevel l2) | l1 == l2 -> case a1 of
             AssocLeft  -> act2
             AssocRight -> act1
-            AssocNone  -> report_sr_conflict i j `seq` act1
-        _ -> report_sr_conflict i j `seq` act1
-resolve_conflict act1@(Reduce i p1) act2@(Shift j (p2, a2)) =
+            AssocNone  -> report_conflict act1 act2 `seq` act1
+        _ -> report_conflict act1 act2 `seq` act1
+resolve_conflict act1@(Reduce _ p1) act2@(Shift _ (p2, a2)) =
     case (p1, p2) of
         (PrecLevel l1, PrecLevel l2) | l1 > l2  -> act1
         (PrecLevel l1, PrecLevel l2) | l1 < l2  -> act2
         (PrecLevel l1, PrecLevel l2) | l1 == l2 -> case a2 of
             AssocLeft  -> act1
             AssocRight -> act2
-            AssocNone  -> report_sr_conflict j i `seq` act2
-        _ -> report_sr_conflict j i `seq` act2
+            AssocNone  -> report_conflict act1 act2 `seq` act2
+        _ -> report_conflict act1 act2 `seq` act2
 -- reduce/reduce: unresolvable, report conflict and force longest rule
-resolve_conflict act1@(Reduce i p1) act2@(Reduce j p2) = report_rr_conflict i j `seq`
+resolve_conflict act1@(Reduce i p1) act2@(Reduce j p2) = report_conflict act1 act2 `seq`
     case (p1, p2) of
         (PrecLevel l1, PrecLevel l2) | l1 > l2 -> act1
         (PrecLevel l1, PrecLevel l2) | l1 < l2 -> act2
@@ -139,12 +139,30 @@ raise_conflict act1 act2 = error $ concat
     ]
 
 
-report_sr_conflict :: RID -> RID -> String
-report_sr_conflict i j = trace' $ printf "shift/reduce:  state %d vs (%d) %s" i j ((show . rid2rule) j)
-
-
-report_rr_conflict :: RID -> RID -> String
-report_rr_conflict i j = trace' $ printf "reduce/reduce: (%d) %s vs (%d) %s" i ((show . rid2rule) i) j ((show . rid2rule) j)
+report_conflict :: Action -> Action -> String
+report_conflict act1@(Reduce _ _) act2@(Reduce _ _) =
+    let sreduce1 = show act1
+        sreduce2 = show act2
+    in  trace' $ printf "reduce/reduce: %s <---- vs ----> %s" sreduce1 sreduce2
+report_conflict act1@(Shift sid _) act2@(Reduce _ _) =
+    let sshift  = show act1
+        st      =
+            ( show
+            . (\ (_, x, _) -> x)
+            . M.lookupDefault (error "sid not found") sid
+            ) lalr1_state_table
+        sreduce = show act2
+    in  trace' $ printf "shift/reduce:  %s (%s) <---- vs ----> %s" sshift st sreduce
+report_conflict act1@(Reduce _ _) act2@(Shift sid _) =
+    let sreduce = show act1
+        sshift  = show act2
+        st      =
+            ( show
+            . (\ (_, x, _) -> x)
+            . M.lookupDefault (error "sid not found") sid
+            ) lalr1_state_table
+    in  trace' $ printf "shift/reduce:  %s (%s) <---- vs ----> %s" sshift st sreduce
+report_conflict act1 act2 = error $ printf "trying to report illegal conflict: %s vs %s" (show act1) (show act2)
 
 
 update_goto_table :: M.HashMap Symbol SID -> GotoTable

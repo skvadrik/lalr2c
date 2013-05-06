@@ -7,6 +7,7 @@ import qualified Data.Set             as S
 import           Data.Hashable
 import           Debug.Trace
 import           GHC.Generics               (Generic)
+import           Text.Printf                (printf)
 
 import           Grammar
 
@@ -28,7 +29,7 @@ data Action
     | Reduce RID Prec
     | Accept
     | Error
-    deriving (Show, Generic)
+    deriving (Generic)
 
 type SID             = Int
 type Core            = (RID, Int)
@@ -54,6 +55,17 @@ instance Eq Action where
 
 instance Hashable a => Hashable (S.Set a) where
     hashWithSalt s set = s `hashWithSalt` S.foldl' hashWithSalt 0 set
+
+instance Show Action where
+    show (Reduce rid p) =
+        let srule = (show . rid2rule) rid
+            sp    = show p
+        in  printf "(%d) %s (%s)" rid srule sp
+    show (Shift sid pa) =
+        let spa  = show pa
+        in  printf "%d %s" sid spa
+    show Accept = "Accept"
+    show Error  = "Error"
 
 
 trace' :: Show a => a -> a
