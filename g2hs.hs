@@ -396,7 +396,7 @@ doc_rhs =
 doc_rules :: [(Int, NonTerminal, [Symbol], Prec, Maybe Code)] -> Doc
 doc_rules rs =
     let maybe_doc_code mc = case mc of
-            Just c  -> PP.text "Just " <> (PP.doubleQuotes . PP.text) c
+            Just c  -> PP.text "Just " <> (PP.text . show) c
             Nothing -> PP.text "Nothing"
         doc_one (i, n, ss, _, c) = PP.parens
             ( PP.int i
@@ -543,7 +543,7 @@ doc_failure mc =
 doc_phony :: M.HashMap Terminal Code -> Doc
 doc_phony ph =
     let f (t, c) = PP.parens $
-            ( (PP.doubleQuotes . terminal2name) t
+            ( (PP.doubleQuotes . PP.text . tail . PP.render . terminal2name) t
             <> PP.char ','
             <> (PP.doubleQuotes . PP.text) c
             )
