@@ -76,10 +76,12 @@ doc_parser tbl v =
         doc_dispatch_rules =
             ( PP.vcat
             . map (doc_dispatch_rule v)
+            . tail
             ) rules
         doc_dispatch_nonterminals =
             ( PP.vcat
             . map (doc_dispatch_nonterminal v tbl)
+            . delete axiom
             . S.toList
             ) nonterminals
     in  doc_parser_entry sids
@@ -218,7 +220,7 @@ doc_reserve_stack :: Doc
 doc_reserve_stack = PP.text "LALR2C_E_RESERVE_STACK ();"
 
 doc_pop_stack :: Int -> Doc
-doc_pop_stack n = PP.text "LALR2C_E_STACK_POP " <> PP.parens (PP.int n) <> PP.semi
+doc_pop_stack n = PP.text "LALR2C_E_POP_STACK " <> PP.parens (PP.int n) <> PP.semi
 
 doc_tmp_semantics :: Doc
 doc_tmp_semantics = PP.text "LALR2C_RW_TMP_SEMANTICS"
