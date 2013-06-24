@@ -258,7 +258,7 @@ parse_symbols :: [Terminal] -> Terminal -> GenParser Char st [Symbol]
 parse_symbols ts lm = do
     ss <- many (try $ wsps >> parse_name)
     return $ case ss of
-        [] -> [STerminal lm]
+        [] -> []
         _  -> map (to_symbol ts) ss
 
 
