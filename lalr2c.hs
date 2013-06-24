@@ -11,7 +11,7 @@ import           Codegen
 
 options :: [OptDescr (CmdOptions -> CmdOptions)]
 options =
-    [ Option "d" ["debug"]  (NoArg  (\ opts -> opts{verbosity = V1})               ) "generate gebuggable output"
+    [ Option "d" ["debug"]  (NoArg  (\ opts -> opts{verbosity = V1})               ) "generate debuggable output"
     , Option "o" ["output"] (ReqArg (\ f opts -> opts{dest = f})     "<c/cpp-file>") "destination file"
     , Option "h" ["header"] (ReqArg (\ f opts -> opts{hdr  = f})     "<h-file>"    ) "header file"
     ]

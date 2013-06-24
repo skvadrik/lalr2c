@@ -109,7 +109,7 @@ doc_parser_entry sids = if reentrant
 
 
 doc_dispatch_state :: Verbosity -> SID -> Symbol -> ActionTable -> Doc
-doc_dispatch_state _ sid s t2act =
+doc_dispatch_state v sid s t2act =
     let act2ts =
             let group_by_act m t act = M.insertWith S.union act (S.singleton t) m
             in  M.foldlWithKey' group_by_act M.empty t2act
@@ -135,12 +135,15 @@ doc_dispatch_state _ sid s t2act =
             $$ doc_phony_cases
             $$ doc_default doc_failure_action
             )
-        maybe_doc_shift = if is_terminal s {- true for shift states only -}
+        is_shift_state = is_terminal s
+        maybe_doc_shift = if is_shift_state
             then
                 doc_assign (doc_stack_semantics 0) doc_token_semantics
                 $$ doc_shift_token
             else PP.empty
     in  doc_decl_state sid
+        $$ verbose v (doc_debug_print_state sid is_shift_state)
+        $$ verbose v doc_debug_print_tokens
         $$ PP.nest 4
             ( doc_assign (doc_stack_state 0) (doc_sid sid)
             $$ maybe_doc_shift
@@ -150,8 +153,9 @@ doc_dispatch_state _ sid s t2act =
 
 
 doc_dispatch_rule :: Verbosity -> (RID, NonTerminal, [Symbol], Maybe Code) -> Doc
-doc_dispatch_rule _ (rid, n, ss, c) =
+doc_dispatch_rule v (rid, n, ss, c) =
     doc_decl_reduce rid
+    $$ verbose v (doc_debug_print_rule rid)
     $$ PP.nest 4
         ( doc_user_code (length ss) c
         $$ doc_goto_nonterminal n
@@ -173,7 +177,7 @@ doc_user_code n (Just code) =
 
 
 doc_dispatch_nonterminal :: Verbosity -> LALR1Table -> NonTerminal -> Doc
-doc_dispatch_nonterminal _ tbl n =
+doc_dispatch_nonterminal v tbl n =
     let f m sid (_, _, gotos) =
             let sid' = M.lookupDefault (error "can't find nonterminal") n gotos
             in  M.insertWith S.union sid' (S.singleton sid) m
@@ -192,6 +196,7 @@ doc_dispatch_nonterminal _ tbl n =
             (doc_stack_state 1)
             (doc_cases $$ doc_default doc_failure_action)
     in  doc_decl_nonterminal n
+        $$ verbose v (doc_debug_print_nonterminal n)
         $$ PP.nest 4 doc_dispatch
 
 
@@ -224,6 +229,34 @@ doc_pop_stack n = PP.text "LALR2C_E_POP_STACK " <> PP.parens (PP.int n) <> PP.se
 
 doc_tmp_semantics :: Doc
 doc_tmp_semantics = PP.text "LALR2C_RW_TMP_SEMANTICS"
+
+
+-- User-defined debug symbols
+doc_debug_print_tokens :: Doc
+doc_debug_print_tokens = PP.text "LALR2C_E_DEBUG_PRINT_TOKENS ();"
+
+doc_debug_print_state :: SID -> Bool -> Doc
+doc_debug_print_state sid is_shift_state =
+    let doc_shift = if is_shift_state
+            then PP.text " [shift]"
+            else PP.text ""
+    in  PP.text "LALR2C_E_DEBUG_PRINT_STATE ("
+        <> (PP.doubleQuotes . PP.text . show) sid
+        <> PP.text ", "
+        <> PP.doubleQuotes doc_shift
+        <> PP.text ");"
+
+doc_debug_print_rule :: RID -> Doc
+doc_debug_print_rule rid =
+    PP.text "LALR2C_E_DEBUG_PRINT_RULE ("
+    <> (PP.doubleQuotes . PP.text . show . rid2rule) rid
+    <> PP.text ");"
+
+doc_debug_print_nonterminal :: NonTerminal -> Doc
+doc_debug_print_nonterminal n =
+    PP.text "LALR2C_E_DEBUG_PRINT_NONTERMINAL ("
+    <> (PP.doubleQuotes . PP.text . show) n
+    <> PP.text ");"
 
 
 -- Internal symbol
@@ -317,16 +350,12 @@ is_terminal _     = False
 ($$$) d1 d2                 = d1 $$ PP.text "" $$ d2
 infixl 5 $$$
 
-{-
+
 verbose :: Verbosity -> Doc -> Doc
 verbose v d = case v of
     V0 -> PP.empty
     V1 -> d
 
-
-doc_verbose :: Verbosity -> Doc -> Doc
-doc_verbose v d = verbose v $ doc_ifthen (PP.text "VERBOSE") d
--}
 
 wrap_in_braces :: Doc -> Doc
 wrap_in_braces d =
