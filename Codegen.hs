@@ -103,8 +103,7 @@ doc_parser_entry sids = if reentrant
                         . map (\ sid -> doc_case (PP.int sid) (doc_goto_state sid))
                         ) sids
                 in  doc_switch doc_guard doc_cases
-        in  PP.text "static bool " <> doc_assign doc_is_1st_call (PP.text "true")
-            $$ doc_ifthenelse di dt de
+        in  doc_ifthenelse di dt de
     else doc_goto_state 1
 
 
@@ -230,6 +229,9 @@ doc_pop_stack n = PP.text "LALR2C_E_POP_STACK " <> PP.parens (PP.int n) <> PP.se
 doc_tmp_semantics :: Doc
 doc_tmp_semantics = PP.text "LALR2C_RW_TMP_SEMANTICS"
 
+doc_is_1st_call :: Doc
+doc_is_1st_call = PP.text "LALR2C_RW_IS_1ST_CALL"
+
 
 -- User-defined debug symbols
 doc_debug_print_tokens :: Doc
@@ -257,11 +259,6 @@ doc_debug_print_nonterminal n =
     PP.text "LALR2C_E_DEBUG_PRINT_NONTERMINAL ("
     <> (PP.doubleQuotes . PP.text . show) n
     <> PP.text ");"
-
-
--- Internal symbol
-doc_is_1st_call :: Doc
-doc_is_1st_call = PP.text "LALR2C_IS_1ST_CALL"
 
 
 -- Internal types
