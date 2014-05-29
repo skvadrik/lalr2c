@@ -102,7 +102,8 @@ doc_parser_entry sids = if reentrant
                         ( PP.vcat
                         . map (\ sid -> doc_case (PP.int sid) (doc_goto_state sid))
                         ) sids
-                in  doc_switch doc_guard doc_cases
+                in  doc_pop_stack 1
+                    $$ doc_switch doc_guard doc_cases
         in  doc_ifthenelse di dt de
     else doc_goto_state 1
 
